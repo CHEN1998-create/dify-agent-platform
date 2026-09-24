@@ -16,12 +16,20 @@ import { useToast } from "@/components/ui/toast";
 import { useAgentStore } from "@/context/agent-store";
 import type { AgentStatus } from "@/lib/mock";
 
+// 注意：模型名要和 provider 的 endpoint 匹配
+// 切换 provider 时（.env.local 改 LLM_BASE_URL），下面的模型名也要对应调整
 const models = [
-  { value: "gpt-4o", label: "gpt-4o" },
-  { value: "gpt-4o-mini", label: "gpt-4o-mini" },
-  { value: "gpt-3.5-turbo", label: "gpt-3.5-turbo" },
-  { value: "claude-3-5-sonnet", label: "claude-3-5-sonnet" },
-  { value: "deepseek-chat", label: "deepseek-chat" },
+  // 国内直连推荐（Default: Deepseek）
+  { value: "deepseek-chat", label: "deepseek-chat（通用）" },
+  { value: "deepseek-reasoner", label: "deepseek-reasoner（推理）" },
+  { value: "deepseek-coder", label: "deepseek-coder（代码）" },
+  { value: "qwen-plus", label: "qwen-plus（阿里）" },
+  { value: "qwen-turbo", label: "qwen-turbo（阿里·快）" },
+  { value: "ernie-4.0", label: "ernie-4.0（百度）" },
+  // 海外模型（部署 Vercel 后可用）
+  { value: "gpt-4o", label: "gpt-4o（OpenAI）" },
+  { value: "gpt-4o-mini", label: "gpt-4o-mini（OpenAI）" },
+  { value: "claude-3-5-sonnet", label: "claude-3-5-sonnet（Anthropic）" },
 ];
 
 export default function AgentConfigPage() {
@@ -290,7 +298,7 @@ export default function AgentConfigPage() {
                 <div className="flex items-end gap-2">
                   <Textarea
                     rows={1}
-                    placeholder="输入消息进行调试（未接入真实模型）..."
+                    placeholder="请在对话页进行真实对话测试 ↘"
                     value={debugInput}
                     onChange={(e) => setDebugInput(e.target.value)}
                     className="min-h-[40px] flex-1"

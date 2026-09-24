@@ -9,7 +9,7 @@ import {
   useState,
   ReactNode,
 } from "react";
-import { agents as seedAgents } from "@/lib/mock";
+import { useAgentStore } from "@/context/agent-store";
 
 export interface ChatSession {
   id: string;
@@ -27,6 +27,15 @@ export interface ChatMessage {
   createdAt: string;
 }
 
+/** onRun 回调携带的真实 LLM 调用结果 */
+export interface OnRunResult {
+  status: "success" | "error" | "timeout";
+  latencyMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  errorMessage?: string;
+}
+
 interface ChatStoreValue {
   sessions: ChatSession[];
   messages: ChatMessage[];
@@ -40,6 +49,8 @@ interface ChatStoreValue {
     content: string
   ) => Promise<{ userMsg: ChatMessage; reply: ChatMessage }>;
   deleteMessages: (sessionId: string) => void;
+  /** 当前是否有 API 调用在进行中（发送中的会话 ID） */
+  sendingSessionId: string | null;
 }
 
 const SESSIONS_KEY = "agent-studio:chat-sessions:v1";
@@ -84,39 +95,29 @@ function timeAgo(iso: string) {
   return Math.floor(h / 24) + " 天前";
 }
 
-// Mock AI 回复生成器 —— 模拟智能体回应
-function mockReply(agentName: string, userMessage: string): string {
-  const greetings = ["你好", "hi", "hello", "在吗"];
-  const clean = userMessage.trim().toLowerCase();
-
-  if (greetings.some((g) => clean.includes(g))) {
-    return `你好！我是 ${agentName}，很高兴为你服务。有什么我可以帮你的？`;
-  }
-
-  if (clean.includes("写") || clean.includes("帮我")) {
-    return `好的，我来帮你处理这个需求。\n\n关于「${userMessage.slice(0, 50)}${userMessage.length > 50 ? "..." : ""}」，我的建议是：\n\n1. 先明确目标和受众\n2. 列出关键点\n3. 组织成清晰的结构\n\n你希望我先从哪方面开始？`;
-  }
-
-  if (clean.includes("总结") || clean.includes("概括")) {
-    return `好的，以下是核心要点：\n\n• 明确问题的本质\n• 列出关键约束条件\n• 设计可验证的方案\n• 执行后收集反馈迭代`;
-  }
-
-  return `收到！关于「${userMessage.slice(0, 30)}${userMessage.length > 30 ? "..." : ""}」，我的理解是你想得到一些帮助。\n\n当前是 mock 模式，接入真实 LLM 后我会给出更精准的回复。你可以继续追问，或者切换其他智能体试试。`;
-}
-
 interface ChatProviderProps {
   children: ReactNode;
-  /** 每次 mock LLM 调用完成后回调（用于写入 run_logs） */
-  onRun?: (agentId: string, sessionId: string, model: string, agentName: string, content: string) => void;
+  /** 每次 LLM 调用完成后回调（用于写入 run_logs） */
+  onRun?: (
+    agentId: string,
+    sessionId: string,
+    model: string,
+    agentName: string,
+    result: OnRunResult
+  ) => void;
 }
 
 export function ChatProvider({ children, onRun }: ChatProviderProps) {
+  // 从 agent-store 拿 agent 配置（systemPrompt/model/temperature/maxTokens）
+  const { getAgent } = useAgentStore();
+
   const [sessions, setSessions] = useState<ChatSession[]>(() =>
     load<ChatSession[]>(SESSIONS_KEY) ?? []
   );
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     load<ChatMessage[]>(MESSAGES_KEY) ?? []
   );
+  const [sendingSessionId, setSendingSessionId] = useState<string | null>(null);
 
   useEffect(() => save(SESSIONS_KEY, sessions), [sessions]);
   useEffect(() => save(MESSAGES_KEY, messages), [messages]);
@@ -124,8 +125,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
   const createSession = useCallback(
     (agentId: string, title?: string): ChatSession => {
       const now = new Date().toISOString();
-      const agentName =
-        seedAgents.find((a) => a.id === agentId)?.name ?? "智能体";
+      const agentName = getAgent(agentId)?.name ?? "智能体";
       const session: ChatSession = {
         id: uid("sess"),
         agentId,
@@ -136,7 +136,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       setSessions((prev) => [session, ...prev]);
       return session;
     },
-    []
+    [getAgent]
   );
 
   const deleteSession = useCallback((id: string) => {
@@ -180,7 +180,19 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       const trimmed = content.trim();
       if (!trimmed) throw new Error("消息不能为空");
 
+      // 防止重复发送
+      if (sendingSessionId === sessionId) {
+        throw new Error("正在等待上一条回复，请稍候");
+      }
+
       const now = new Date().toISOString();
+      const session = sessions.find((s) => s.id === sessionId);
+      if (!session) throw new Error("会话不存在");
+
+      const agent = getAgent(session.agentId);
+      const agentName = agent?.name ?? "智能体";
+
+      // 1. 先插入用户消息
       const userMsg: ChatMessage = {
         id: uid("m"),
         sessionId,
@@ -190,7 +202,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       };
       setMessages((prev) => [...prev, userMsg]);
 
-      // 更新 session updatedAt + 生成标题（第一条消息）
+      // 更新 session updatedAt + 自动标题（第一条消息）
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
@@ -205,38 +217,104 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
         })
       );
 
-      // mock AI 回复（模拟 600ms 延迟）
-      await new Promise((r) => setTimeout(r, 600));
+      // 2. 构造传给 LLM 的消息（system prompt + 历史 + 当前 user）
+      const historyMsgs = messages
+        .filter((m) => m.sessionId === sessionId)
+        .sort(
+          (a, b) =>
+            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        )
+        .map((m) => ({ role: m.role, content: m.content }));
 
-      const session = sessions.find((s) => s.id === sessionId);
-      const agentName =
-        seedAgents.find((a) => a.id === session?.agentId)?.name ?? "智能体";
+      const apiMessages: { role: string; content: string }[] = [];
+      if (agent?.systemPrompt) {
+        apiMessages.push({ role: "system", content: agent.systemPrompt });
+      }
+      apiMessages.push(...historyMsgs);
+      apiMessages.push({ role: "user", content: trimmed });
+
+      setSendingSessionId(sessionId);
+
+      let replyContent = "";
+      let llmResult: OnRunResult = {
+        status: "error",
+        latencyMs: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        errorMessage: "",
+      };
+
+      try {
+        // 3. 调 API route → 服务端代理 → 真实 LLM
+        const resp = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: apiMessages,
+            model: agent?.model ?? "deepseek-chat",
+            temperature: agent?.temperature ?? 0.7,
+            maxTokens: agent?.maxTokens ?? 2048,
+          }),
+        });
+
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+        }
+
+        const data = await resp.json();
+        replyContent = data.content ?? "";
+        llmResult = {
+          status: data.status ?? "error",
+          latencyMs: data.latencyMs ?? 0,
+          promptTokens: data.promptTokens ?? 0,
+          completionTokens: data.completionTokens ?? 0,
+          errorMessage: data.errorMessage,
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        llmResult = {
+          status: "error",
+          latencyMs: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          errorMessage: msg,
+        };
+        replyContent = `⚠️ 无法连接到 AI 服务：${msg}`;
+      } finally {
+        setSendingSessionId(null);
+      }
+
+      // 4. 插入 AI 回复
+      if (!replyContent) {
+        replyContent =
+          llmResult.status === "timeout"
+            ? "⏱️ AI 回复超时，请稍后重试"
+            : llmResult.status === "error"
+            ? `❌ AI 服务出错：${llmResult.errorMessage ?? "未知错误"}`
+            : "（AI 返回了空内容）";
+      }
+
       const reply: ChatMessage = {
         id: uid("m"),
         sessionId,
         role: "assistant",
-        content: mockReply(agentName, trimmed),
+        content: replyContent,
         createdAt: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, reply]);
 
-      // 回调：让上层写入 run_logs（如果提供了 onRun）
-      const agent = seedAgents.find((a) => a.id === session?.agentId);
+      // 5. 回调：让上层写入 run_logs（真实数据）
       if (onRun && agent) {
         try {
-          onRun(
-            agent.id,
-            sessionId,
-            agent.model,
-            agentName,
-            trimmed
-          );
-        } catch { /* 日志写入失败不影响对话 */ }
+          onRun(agent.id, sessionId, agent.model, agentName, llmResult);
+        } catch {
+          /* 日志写入失败不影响对话 */
+        }
       }
 
       return { userMsg, reply };
     },
-    [messages, sessions, onRun]
+    [messages, sessions, getAgent, onRun, sendingSessionId]
   );
 
   const value = useMemo<ChatStoreValue>(
@@ -248,6 +326,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
             new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
         ),
       messages,
+      sendingSessionId,
       createSession,
       deleteSession,
       renameSession,
@@ -259,6 +338,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
     [
       sessions,
       messages,
+      sendingSessionId,
       createSession,
       deleteSession,
       renameSession,

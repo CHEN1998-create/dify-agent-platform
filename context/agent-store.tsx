@@ -90,7 +90,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       name: input.name.trim(),
       description: input.description.trim() || "还没有描述",
       systemPrompt: "你是一个有帮助的 AI 助手。",
-      model: "gpt-4o-mini",
+      model: "deepseek-chat",
       temperature: 0.7,
       maxTokens: 2048,
       status: "draft",

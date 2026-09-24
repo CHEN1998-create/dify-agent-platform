@@ -3,14 +3,14 @@
 import { useCallback } from "react";
 import { AuthProvider } from "@/context/auth-context";
 import { AgentProvider } from "@/context/agent-store";
-import { ChatProvider } from "@/context/chat-store";
+import { ChatProvider, type OnRunResult } from "@/context/chat-store";
 import { RunLogsProvider, useRunLogs } from "@/context/run-logs";
 import { ToastProvider } from "@/components/ui/toast";
 
 /**
  * 串 ChatProvider 和 RunLogsProvider：
- * ChatProvider.sendMessage 调用 mock AI 后触发 onRun
- * → onRun 调 useRunLogs().createLog 写日志
+ * ChatProvider.sendMessage 调 LLM API 拿到真实结果后触发 onRun
+ * → onRun 把 latencyMs / tokens / status 等真实数据透传给 createLog
  */
 function ChatWithLogsBridge({ children }: { children: React.ReactNode }) {
   const { createLog } = useRunLogs();
@@ -21,9 +21,15 @@ function ChatWithLogsBridge({ children }: { children: React.ReactNode }) {
       sessionId: string,
       model: string,
       agentName: string,
-      _content: string
+      result: OnRunResult
     ) => {
-      createLog(agentId, sessionId, model, agentName, { status: "success" });
+      createLog(agentId, sessionId, model, agentName, {
+        status: result.status,
+        latencyMs: result.latencyMs,
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens,
+        errorMessage: result.errorMessage,
+      });
     },
     [createLog]
   );
