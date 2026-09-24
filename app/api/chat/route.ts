@@ -19,7 +19,12 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs"; // Route Handler 默认就是 nodejs，显式声明
 
 const API_KEY = process.env.LLM_API_KEY;
-const BASE_URL = process.env.LLM_BASE_URL ?? "https://api.deepseek.com/v1";
+// 默认走硅基流动（国内直连，注册送 ¥14 免费额度）
+// 切换 provider 时改 LLM_BASE_URL 即可，模型名也要对应改
+//   硅基流动: https://api.siliconflow.cn/v1
+//   Deepseek: https://api.deepseek.com/v1
+//   DashScope: https://dashscope.aliyuncs.com/compatible-mode/v1
+const BASE_URL = process.env.LLM_BASE_URL ?? "https://api.siliconflow.cn/v1";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";

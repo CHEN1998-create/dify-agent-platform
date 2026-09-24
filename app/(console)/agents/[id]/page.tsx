@@ -16,20 +16,21 @@ import { useToast } from "@/components/ui/toast";
 import { useAgentStore } from "@/context/agent-store";
 import type { AgentStatus } from "@/lib/mock";
 
-// 注意：模型名要和 provider 的 endpoint 匹配
-// 切换 provider 时（.env.local 改 LLM_BASE_URL），下面的模型名也要对应调整
+// 模型名 = 硅基流动的"厂商/模型名"格式
+// endpoint 默认是 https://api.siliconflow.cn/v1
+// 完整模型列表见 https://cloud.siliconflow.cn/models
 const models = [
-  // 国内直连推荐（Default: Deepseek）
-  { value: "deepseek-chat", label: "deepseek-chat（通用）" },
-  { value: "deepseek-reasoner", label: "deepseek-reasoner（推理）" },
-  { value: "deepseek-coder", label: "deepseek-coder（代码）" },
-  { value: "qwen-plus", label: "qwen-plus（阿里）" },
-  { value: "qwen-turbo", label: "qwen-turbo（阿里·快）" },
-  { value: "ernie-4.0", label: "ernie-4.0（百度）" },
-  // 海外模型（部署 Vercel 后可用）
-  { value: "gpt-4o", label: "gpt-4o（OpenAI）" },
-  { value: "gpt-4o-mini", label: "gpt-4o-mini（OpenAI）" },
-  { value: "claude-3-5-sonnet", label: "claude-3-5-sonnet（Anthropic）" },
+  // DeepSeek 系列（通用首选）
+  { value: "deepseek-ai/DeepSeek-V3", label: "DeepSeek-V3（通用强）" },
+  { value: "deepseek-ai/DeepSeek-V4-Flash", label: "DeepSeek-V4-Flash（便宜快）" },
+  { value: "deepseek-ai/DeepSeek-R1", label: "DeepSeek-R1（推理/数学）" },
+  // Qwen 系列
+  { value: "Qwen/Qwen2.5-32B-Instruct", label: "Qwen2.5-32B（阿里旗舰）" },
+  { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen2.5-7B（轻量便宜）" },
+  // GLM 系列
+  { value: "THUDM/GLM-4-32B-0414", label: "GLM-4-32B（智谱）" },
+  // Kimi
+  { value: "moonshotai/Kimi-K2.5", label: "Kimi-K2.5（长上下文）" },
 ];
 
 export default function AgentConfigPage() {
