@@ -3,13 +3,15 @@
 import {
   Users,
   Bot,
+  MessageSquare,
   Zap,
   Clock,
   AlertTriangle,
   FileCheck,
+  Database,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { platformStats } from "@/lib/mock";
+import { useAdminStats } from "@/lib/admin-stats";
 import {
   AreaChart,
   Area,
@@ -19,16 +21,46 @@ import {
   Tooltip,
   ResponsiveContainer,
   Legend,
+  BarChart,
+  Bar,
+  Cell,
 } from "recharts";
 
-const stats = [
-  { label: "总用户数", value: platformStats.totalUsers.toLocaleString(), icon: Users, color: "text-blue-600 bg-blue-100" },
-  { label: "智能体总数", value: platformStats.totalAgents.toLocaleString(), icon: Bot, color: "text-violet-600 bg-violet-100" },
-  { label: "总调用次数", value: platformStats.totalRuns.toLocaleString(), icon: Zap, color: "text-emerald-600 bg-emerald-100" },
-  { label: "平均响应耗时", value: `${platformStats.avgLatencyMs} ms`, icon: Clock, color: "text-amber-600 bg-amber-100" },
-];
-
 export default function AdminHomePage() {
+  const stats = useAdminStats();
+
+  const errorRate =
+    stats.totalRuns > 0
+      ? ((stats.errorRuns / stats.totalRuns) * 100).toFixed(1)
+      : "0.0";
+
+  const statCards = [
+    {
+      label: "当前登录用户数",
+      value: stats.trackedUsers.toString(),
+      icon: Users,
+      color: "text-blue-600 bg-blue-100",
+    },
+    {
+      label: "智能体总数",
+      value: stats.totalAgents.toLocaleString(),
+      icon: Bot,
+      color: "text-violet-600 bg-violet-100",
+    },
+    {
+      label: "总调用次数",
+      value: stats.totalRuns.toLocaleString(),
+      icon: Zap,
+      color: "text-emerald-600 bg-emerald-100",
+    },
+    {
+      label: "平均响应耗时",
+      value: `${stats.avgLatencyMs} ms`,
+      icon: Clock,
+      color: "text-amber-600 bg-amber-100",
+    },
+  ];
+
   return (
     <>
       <header className="flex h-16 items-center border-b bg-card px-6">
@@ -39,13 +71,13 @@ export default function AdminHomePage() {
         <div className="mb-6">
           <h2 className="text-2xl font-bold">欢迎回来，管理员</h2>
           <p className="text-sm text-muted-foreground">
-            实时监控平台运行状况与资源使用
+            基于本浏览器已登录账号的聚合数据（接数据库后升级为全平台统计）
           </p>
         </div>
 
         {/* Stat cards */}
         <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {stats.map((s) => {
+          {statCards.map((s) => {
             const Icon = s.icon;
             return (
               <Card key={s.label}>
@@ -70,39 +102,41 @@ export default function AdminHomePage() {
               <CardTitle className="text-base">近 7 天调用趋势</CardTitle>
             </CardHeader>
             <CardContent className="h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={platformStats.chart.labels.map((label, i) => ({
-                  label,
-                  调用量: platformStats.chart.runs[i],
-                  失败: platformStats.chart.errors[i],
-                }))}>
-                  <defs>
-                    <linearGradient id="colorCalls" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <Tooltip />
-                  <Legend />
-                  <Area
-                    type="monotone"
-                    dataKey="调用量"
-                    stroke="#2563eb"
-                    strokeWidth={2}
-                    fill="url(#colorCalls)"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="失败"
-                    stroke="#ef4444"
-                    strokeWidth={2}
-                    fill="transparent"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+              {stats.totalRuns === 0 ? (
+                <EmptyHint text="暂无调用数据，去对话页发几条消息试试" />
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={stats.trend7d}>
+                    <defs>
+                      <linearGradient id="colorCalls" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#2563eb" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                    <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Legend />
+                    <Area
+                      type="monotone"
+                      dataKey="runs"
+                      name="调用量"
+                      stroke="#2563eb"
+                      strokeWidth={2}
+                      fill="url(#colorCalls)"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="errors"
+                      name="失败"
+                      stroke="#ef4444"
+                      strokeWidth={2}
+                      fill="transparent"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
             </CardContent>
           </Card>
 
@@ -115,46 +149,54 @@ export default function AdminHomePage() {
               <MetricRow
                 icon={AlertTriangle}
                 label="模型调用失败率"
-                value={`${platformStats.errorRate}%`}
-                tone="warn"
+                value={`${errorRate}%`}
+                tone={Number(errorRate) > 10 ? "warn" : "good"}
               />
               <MetricRow
                 icon={FileCheck}
                 label="文档处理成功率"
-                value={`${platformStats.docsSuccessRate}%`}
+                value="100%"
                 tone="good"
               />
               <MetricRow
-                icon={Clock}
-                label="P95 响应耗时"
-                value="1,840 ms"
+                icon={MessageSquare}
+                label="会话总数"
+                value={stats.totalSessions.toLocaleString()}
                 tone="good"
               />
               <MetricRow
-                icon={Zap}
-                label="并发调用数"
-                value="12"
+                icon={Database}
+                label="知识库文档"
+                value={stats.totalKnowledgeDocs.toLocaleString()}
                 tone="good"
               />
             </CardContent>
           </Card>
         </div>
 
-        {/* Resource overview */}
+        {/* Model distribution */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">资源使用概览</CardTitle>
+            <CardTitle className="text-base">模型调用分布</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
-              <ResourceBar label="CPU 使用率" value={42} color="bg-blue-500" />
-              <ResourceBar label="内存使用率" value={67} color="bg-violet-500" />
-              <ResourceBar label="存储使用率" value={31} color="bg-emerald-500" />
-            </div>
+          <CardContent className="h-64">
+            {Object.keys(stats.modelDistribution).length === 0 ? (
+              <EmptyHint text="暂无模型调用数据" />
+            ) : (
+              <ModelBarChart distribution={stats.modelDistribution} />
+            )}
           </CardContent>
         </Card>
       </main>
     </>
+  );
+}
+
+function EmptyHint({ text }: { text: string }) {
+  return (
+    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      {text}
+    </div>
   );
 }
 
@@ -182,16 +224,34 @@ function MetricRow({
   );
 }
 
-function ResourceBar({ label, value, color }: { label: string; value: number; color: string }) {
+function ModelBarChart({
+  distribution,
+}: {
+  distribution: Record<string, number>;
+}) {
+  const entries = Object.entries(distribution)
+    .map(([name, runs]) => ({ name, runs }))
+    .sort((a, b) => b.runs - a.runs);
+
+  const colors = [
+    "#2563eb", "#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
+    "#7c3aed", "#a78bfa", "#c4b5fd",
+    "#10b981", "#34d399",
+  ];
+
   return (
-    <div>
-      <div className="mb-2 flex justify-between text-sm">
-        <span className="text-muted-foreground">{label}</span>
-        <span className="font-medium">{value}%</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div className={`h-full ${color}`} style={{ width: `${value}%` }} />
-      </div>
-    </div>
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={entries} layout="vertical">
+        <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+        <XAxis type="number" tick={{ fontSize: 12 }} />
+        <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={140} />
+        <Tooltip formatter={(v) => `${v} 次`} />
+        <Bar dataKey="runs" name="调用次数" radius={[0, 4, 4, 0]}>
+          {entries.map((_, i) => (
+            <Cell key={i} fill={colors[i % colors.length]} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
   );
 }

@@ -1,10 +1,11 @@
 "use client";
 
-import { Search, TrendingUp } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { adminUsers } from "@/lib/mock";
+import { useAdminStats } from "@/lib/admin-stats";
 import {
   BarChart,
   Bar,
@@ -16,15 +17,41 @@ import {
   Cell,
 } from "recharts";
 
-const topUsersByToken = [...adminUsers]
-  .sort((a, b) => b.tokenUsage - a.tokenUsage)
-  .slice(0, 5)
-  .map((u) => ({
-    name: u.email.split("@")[0],
-    tokens: Math.round(u.tokenUsage / 1000),
-  }));
+const COLORS = [
+  "#2563eb", "#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
+  "#7c3aed", "#a78bfa", "#c4b5fd",
+  "#10b981", "#34d399",
+];
 
 export default function AdminUsagePage() {
+  const stats = useAdminStats();
+  const [search, setSearch] = useState("");
+
+  const topUsers = useMemo(
+    () =>
+      stats.userStats
+        .filter((u) => u.userId !== null)
+        .slice(0, 5)
+        .map((u) => ({
+          name: u.userId!.slice(0, 10),
+          tokens: Math.round(u.totalTokens / 1000),
+        })),
+    [stats.userStats]
+  );
+
+  const filteredUsers = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return stats.userStats.filter((u) =>
+      q ? (u.userId ?? "匿名").toLowerCase().includes(q) : true
+    );
+  }, [stats.userStats, search]);
+
+  const topModels = Object.entries(stats.modelDistribution)
+    .map(([name, runs]) => ({ name, runs }))
+    .sort((a, b) => b.runs - a.runs);
+
+  const modelTotal = topModels.reduce((s, m) => s + m.runs, 0);
+
   return (
     <>
       <header className="flex h-16 items-center border-b bg-card px-6">
@@ -35,7 +62,7 @@ export default function AdminUsagePage() {
         <div className="mb-6">
           <h2 className="text-2xl font-bold">用户与使用情况</h2>
           <p className="text-sm text-muted-foreground">
-            查看全平台用户、调用消耗与异常情况
+            查看本浏览器已登录账号的聚合数据（接数据库后升级为全平台统计）
           </p>
         </div>
 
@@ -43,34 +70,44 @@ export default function AdminUsagePage() {
         <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
           <Card>
             <CardContent className="p-5">
-              <p className="text-sm text-muted-foreground">用户总数</p>
-              <p className="text-2xl font-bold">1,284</p>
-              <p className="mt-1 flex items-center gap-1 text-xs text-emerald-600">
-                <TrendingUp className="h-3 w-3" /> +12.4% 本周
+              <p className="text-sm text-muted-foreground">当前可见用户</p>
+              <p className="text-2xl font-bold">{stats.trackedUsers}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                本浏览器 localStorage 内登录过的账号
               </p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-5">
-              <p className="text-sm text-muted-foreground">活跃用户</p>
-              <p className="text-2xl font-bold">342</p>
-              <p className="mt-1 flex items-center gap-1 text-xs text-emerald-600">
-                <TrendingUp className="h-3 w-3" /> +5.1% 本周
+              <p className="text-sm text-muted-foreground">总调用次数</p>
+              <p className="text-2xl font-bold">{stats.totalRuns.toLocaleString()}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                成功 {stats.successRuns} · 失败 {stats.errorRuns}
               </p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-5">
               <p className="text-sm text-muted-foreground">总 Token 消耗</p>
-              <p className="text-2xl font-bold">1.57M</p>
-              <p className="mt-1 text-xs text-muted-foreground">本月</p>
+              <p className="text-2xl font-bold tabular-nums">
+                {(
+                  (stats.totalPromptTokens + stats.totalCompletionTokens) / 1000
+                ).toFixed(1)}
+                K
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                prompt {stats.totalPromptTokens.toLocaleString()} + completion{" "}
+                {stats.totalCompletionTokens.toLocaleString()}
+              </p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-5">
-              <p className="text-sm text-muted-foreground">异常调用</p>
-              <p className="text-2xl font-bold text-amber-600">38</p>
-              <p className="mt-1 text-xs text-muted-foreground">近 24 小时</p>
+              <p className="text-sm text-muted-foreground">知识库文档</p>
+              <p className="text-2xl font-bold">{stats.totalKnowledgeDocs}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                分属 {stats.userStats.filter((u) => u.userId !== null).length} 位用户
+              </p>
             </CardContent>
           </Card>
         </div>
@@ -82,19 +119,25 @@ export default function AdminUsagePage() {
               <CardTitle className="text-base">Token 消耗 Top 5 用户</CardTitle>
             </CardHeader>
             <CardContent className="h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={topUsersByToken} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 12 }} />
-                  <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={60} />
-                  <Tooltip formatter={(v) => `${v}K tokens`} />
-                  <Bar dataKey="tokens" radius={[0, 4, 4, 0]}>
-                    {topUsersByToken.map((_, i) => (
-                      <Cell key={i} fill={["#2563eb", "#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe"][i]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              {topUsers.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                  暂无用户数据
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={topUsers} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 12 }} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 12 }} width={100} />
+                    <Tooltip formatter={(v) => `${v}K tokens`} />
+                    <Bar dataKey="tokens" name="tokens" radius={[0, 4, 4, 0]}>
+                      {topUsers.map((_, i) => (
+                        <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
             </CardContent>
           </Card>
 
@@ -104,22 +147,34 @@ export default function AdminUsagePage() {
               <CardTitle className="text-base">模型调用分布</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4 pt-2">
-              {[
-                { name: "gpt-4o-mini", pct: 52, color: "bg-blue-500" },
-                { name: "gpt-4o", pct: 28, color: "bg-violet-500" },
-                { name: "gpt-3.5-turbo", pct: 15, color: "bg-emerald-500" },
-                { name: "claude-3-5-sonnet", pct: 5, color: "bg-amber-500" },
-              ].map((m) => (
-                <div key={m.name}>
-                  <div className="mb-1 flex justify-between text-sm">
-                    <span className="font-medium">{m.name}</span>
-                    <span className="text-muted-foreground">{m.pct}%</span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-muted">
-                    <div className={`h-full ${m.color}`} style={{ width: `${m.pct}%` }} />
-                  </div>
+              {topModels.length === 0 ? (
+                <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+                  暂无模型调用数据
                 </div>
-              ))}
+              ) : (
+                topModels.map((m, i) => (
+                  <div key={m.name}>
+                    <div className="mb-1 flex justify-between text-sm">
+                      <span className="font-medium">{m.name}</span>
+                      <span className="text-muted-foreground">
+                        {modelTotal > 0
+                          ? ((m.runs / modelTotal) * 100).toFixed(1)
+                          : 0}
+                        %
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${modelTotal > 0 ? (m.runs / modelTotal) * 100 : 0}%`,
+                          backgroundColor: COLORS[i % COLORS.length],
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </div>
@@ -130,7 +185,12 @@ export default function AdminUsagePage() {
             <CardTitle className="text-base">用户列表</CardTitle>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="搜索用户..." className="w-56 pl-9" />
+              <Input
+                placeholder="搜索用户 ID..."
+                className="w-56 pl-9"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
             </div>
           </CardHeader>
           <div className="overflow-x-auto">
@@ -138,7 +198,6 @@ export default function AdminUsagePage() {
               <thead>
                 <tr className="border-y bg-muted/40 text-left text-xs uppercase text-muted-foreground">
                   <th className="px-4 py-3 font-medium">用户</th>
-                  <th className="px-4 py-3 font-medium">角色</th>
                   <th className="px-4 py-3 font-medium">智能体数</th>
                   <th className="px-4 py-3 font-medium">调用次数</th>
                   <th className="px-4 py-3 font-medium">Token 消耗</th>
@@ -146,29 +205,43 @@ export default function AdminUsagePage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {adminUsers.map((u) => (
-                  <tr key={u.id} className="hover:bg-muted/30">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
-                          {u.email[0].toUpperCase()}
-                        </div>
-                        <span className="font-medium">{u.email}</span>
-                      </div>
+                {filteredUsers.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                      暂无用户数据
                     </td>
-                    <td className="px-4 py-3">
-                      <Badge variant={u.role === "admin" ? "default" : "secondary"}>
-                        {u.role === "admin" ? "管理员" : "用户"}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 tabular-nums">{u.agentCount}</td>
-                    <td className="px-4 py-3 tabular-nums">{u.runCount.toLocaleString()}</td>
-                    <td className="px-4 py-3 tabular-nums">
-                      {(u.tokenUsage / 1000).toFixed(1)}K
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{u.lastActive}</td>
                   </tr>
-                ))}
+                ) : (
+                  filteredUsers.map((u) => (
+                    <tr key={u.userId} className="hover:bg-muted/30">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                            {(u.userId ?? "A")[0].toUpperCase()}
+                          </div>
+                          <span className="font-medium max-w-[200px] truncate">
+                            {u.userId ?? "匿名（未登录状态）"}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 tabular-nums">{u.totalAgents}</td>
+                      <td className="px-4 py-3 tabular-nums">{u.totalRuns.toLocaleString()}</td>
+                      <td className="px-4 py-3 tabular-nums">
+                        {(u.totalTokens / 1000).toFixed(1)}K
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {u.lastActive
+                          ? new Date(u.lastActive).toLocaleString("zh-CN", {
+                              month: "2-digit",
+                              day: "2-digit",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
