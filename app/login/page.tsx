@@ -1,14 +1,71 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
-import { Bot, Github, Chrome } from "lucide-react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { Bot, Github, Chrome, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAuth } from "@/context/auth-context";
+import { DEMO_ADMIN, UserRole } from "@/lib/auth";
+
+type Mode = "login" | "register";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const { login, register, user, loading } = useAuth();
+
+  const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<UserRole>("user");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  // 已登录则跳转
+  useEffect(() => {
+    if (!loading && user) {
+      router.replace("/agents");
+    }
+  }, [user, loading, router]);
+
+  const validate = (): string => {
+    if (!email.trim()) return "请输入邮箱";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "邮箱格式不正确";
+    if (password.length < 6) return "密码至少 6 位";
+    if (mode === "register" && !name.trim()) return "请输入昵称";
+    return "";
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+
+    const msg = validate();
+    if (msg) {
+      setError(msg);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      if (mode === "login") {
+        await login(email, password);
+      } else {
+        await register(email, password, name, role);
+      }
+      router.replace("/agents");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败，请重试");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const switchMode = (m: Mode) => {
+    setMode(m);
+    setError("");
+  };
 
   return (
     <div className="flex min-h-screen">
@@ -29,9 +86,10 @@ export default function LoginPage() {
             让 AI 真正为你工作。
           </p>
         </div>
-        <p className="text-sm text-primary-foreground/60">
-          © 2025 Agent Studio. 灵感来自 Dify。
-        </p>
+        <div className="space-y-2 text-sm text-primary-foreground/70">
+          <p className="font-medium text-primary-foreground">演示账号</p>
+          <p>管理员：{DEMO_ADMIN.email} / {DEMO_ADMIN.password}</p>
+        </div>
       </div>
 
       {/* Right form panel */}
@@ -41,15 +99,47 @@ export default function LoginPage() {
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary text-primary-foreground lg:hidden">
               <Bot className="h-6 w-6" />
             </div>
-            <h1 className="text-2xl font-bold">欢迎回来</h1>
-            <p className="text-sm text-muted-foreground">登录以继续使用 Agent Studio</p>
+            <h1 className="text-2xl font-bold">
+              {mode === "login" ? "欢迎回来" : "创建账号"}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {mode === "login"
+                ? "登录以继续使用 Agent Studio"
+                : "注册后即可创建你的第一个智能体"}
+            </p>
+          </div>
+
+          {/* Mode tabs */}
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+            <button
+              type="button"
+              onClick={() => switchMode("login")}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                mode === "login"
+                  ? "bg-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              登录
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("register")}
+              className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                mode === "register"
+                  ? "bg-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              注册
+            </button>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Button variant="outline" className="gap-2">
+            <Button variant="outline" className="gap-2" type="button">
               <Github className="h-4 w-4" /> GitHub
             </Button>
-            <Button variant="outline" className="gap-2">
+            <Button variant="outline" className="gap-2" type="button">
               <Chrome className="h-4 w-4" /> Google
             </Button>
           </div>
@@ -63,13 +153,18 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <form
-            className="space-y-4"
-            onSubmit={(e) => {
-              e.preventDefault();
-              window.location.href = "/agents";
-            }}
-          >
+          <form className="space-y-4" onSubmit={handleSubmit}>
+            {mode === "register" && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">昵称</label>
+                <Input
+                  placeholder="你的昵称"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
               <label className="text-sm font-medium">邮箱</label>
               <Input
@@ -79,31 +174,59 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
+
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">密码</label>
-                <Link href="#" className="text-xs text-primary hover:underline">
-                  忘记密码？
-                </Link>
-              </div>
+              <label className="text-sm font-medium">密码</label>
               <Input
                 type="password"
-                placeholder="••••••••"
+                placeholder="至少 6 位"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
             </div>
-            <Button type="submit" className="w-full">
-              登录
+
+            {mode === "register" && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">账号角色</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["user", "admin"] as UserRole[]).map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setRole(r)}
+                      className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
+                        role === r
+                          ? "border-primary bg-primary/5 text-primary"
+                          : "border-border hover:bg-accent"
+                      }`}
+                    >
+                      {r === "user" ? "普通用户" : "管理员"}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  管理员可访问后台管理台，普通用户仅使用控制台。
+                </p>
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+
+            <Button type="submit" className="w-full" disabled={submitting}>
+              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {mode === "login" ? "登录" : "注册并登录"}
             </Button>
           </form>
 
-          <p className="text-center text-sm text-muted-foreground">
-            还没有账号？{" "}
-            <Link href="#" className="font-medium text-primary hover:underline">
-              注册
-            </Link>
-          </p>
+          {mode === "login" && (
+            <p className="text-center text-sm text-muted-foreground lg:hidden">
+              演示管理员：{DEMO_ADMIN.email} / {DEMO_ADMIN.password}
+            </p>
+          )}
         </div>
       </div>
     </div>

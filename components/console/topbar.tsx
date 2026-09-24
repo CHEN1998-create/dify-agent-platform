@@ -3,8 +3,11 @@
 import { Bell, Search, User } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/context/auth-context";
 
 export function ConsoleTopbar({ title }: { title: string }) {
+  const { user } = useAuth();
+
   return (
     <header className="flex h-16 items-center justify-between border-b bg-card px-6">
       <h1 className="text-lg font-semibold">{title}</h1>
@@ -20,7 +23,7 @@ export function ConsoleTopbar({ title }: { title: string }) {
           <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground">
             <User className="h-4 w-4" />
           </div>
-          <span className="pr-2 text-sm font-medium">alice@example.com</span>
+          <span className="pr-2 text-sm font-medium">{user?.name ?? user?.email}</span>
         </div>
       </div>
     </header>
