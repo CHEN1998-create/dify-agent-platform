@@ -15,7 +15,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { cookies } from "next/headers";
 
 export const runtime = "nodejs"; // Route Handler 默认就是 nodejs，显式声明
 
@@ -42,18 +42,79 @@ interface RequestBody {
 
 export async function POST(req: NextRequest) {
   // 0. 鉴权：未登录用户禁止消耗 API Key
+  // 本地解 JWT 校验，不走 supabase.auth.getUser()（其需要服务端访问 Supabase，
+  // 国内 Node.js 直连会被 GFW 重置）。浏览器端登录后 session cookie 已是
+  // Supabase 签发的合法 JWT，这里只做存在性 + 过期时间校验
   try {
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
+    const cookieStore = cookies();
+    const sbCookie = cookieStore
+      .getAll()
+      .find((c) => c.name.includes("auth-token"));
+
+    if (!sbCookie || !sbCookie.value) {
       return NextResponse.json(
         { error: "请先登录后再使用 AI 对话" },
         { status: 401 }
       );
     }
-  } catch {
+
+    // supabase auth cookie value 有两种编码（取决于 @supabase/ssr 版本）：
+    // - 旧版：URL-encoded JSON  { access_token, refresh_token, ... }
+    // - @supabase/ssr 0.12+：`base64-<base64编码的JSON>`
+    let rawValue = sbCookie.value;
+    let parsed: any;
+    if (rawValue.startsWith("base64-")) {
+      const b64 = rawValue.slice("base64-".length);
+      const jsonStr = Buffer.from(b64, "base64").toString("utf-8");
+      parsed = JSON.parse(jsonStr);
+    } else {
+      parsed = JSON.parse(decodeURIComponent(rawValue));
+    }
+    const accessToken: string | undefined = parsed?.access_token;
+
+    if (!accessToken || typeof accessToken !== "string") {
+      return NextResponse.json(
+        { error: "会话无效，请重新登录" },
+        { status: 401 }
+      );
+    }
+
+    // JWT = header.payload.signature，三段 base64url，点号分隔
+    const parts = accessToken.split(".");
+    if (parts.length !== 3) {
+      return NextResponse.json(
+        { error: "会话格式无效" },
+        { status: 401 }
+      );
+    }
+
+    // base64url payload → JSON
+    const payloadJson = Buffer.from(
+      parts[1].replace(/-/g, "+").replace(/_/g, "/"),
+      "base64"
+    ).toString("utf-8");
+    const payload = JSON.parse(payloadJson) as {
+      sub?: string;
+      exp?: number;
+    };
+
+    if (!payload.sub) {
+      return NextResponse.json(
+        { error: "会话缺少用户标识" },
+        { status: 401 }
+      );
+    }
+
+    // exp 是秒级 UNIX 时间戳
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof payload.exp === "number" && payload.exp < now) {
+      return NextResponse.json(
+        { error: "登录已过期，请重新登录" },
+        { status: 401 }
+      );
+    }
+  } catch (e) {
+    console.error("[/api/chat] 鉴权异常:", e);
     return NextResponse.json(
       { error: "鉴权失败，请重新登录" },
       { status: 401 }
