@@ -73,23 +73,30 @@ export default function AgentConfigPage() {
 
   const statusLabel = { draft: "草稿", published: "已发布", paused: "已停用" }[status];
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!agent) return;
     if (!name.trim()) {
       toast("请输入智能体名称", { variant: "error" });
       return;
     }
-    updateAgent(agent.id, {
-      name: name.trim(),
-      description: description.trim(),
-      systemPrompt,
-      model,
-      temperature,
-      maxTokens,
-      status,
-    });
-    initialRef.current = { name, description, systemPrompt, model, temperature, maxTokens, status };
-    toast("配置已保存", { description: agent.name, variant: "success" });
+    try {
+      await updateAgent(agent.id, {
+        name: name.trim(),
+        description: description.trim(),
+        systemPrompt,
+        model,
+        temperature,
+        maxTokens,
+        status,
+      });
+      initialRef.current = { name, description, systemPrompt, model, temperature, maxTokens, status };
+      toast("配置已保存", { description: agent.name, variant: "success" });
+    } catch (err) {
+      toast("保存失败", {
+        description: err instanceof Error ? err.message : String(err),
+        variant: "error",
+      });
+    }
   };
 
   const handleReset = () => {
@@ -104,12 +111,19 @@ export default function AgentConfigPage() {
     toast("已恢复到上次保存状态", { variant: "info" });
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!agent) return;
     const name = agent.name;
-    deleteAgent(agent.id);
-    toast("已删除", { description: name, variant: "info" });
-    router.replace("/agents");
+    try {
+      await deleteAgent(agent.id);
+      toast("已删除", { description: name, variant: "info" });
+      router.replace("/agents");
+    } catch (err) {
+      toast("删除失败", {
+        description: err instanceof Error ? err.message : String(err),
+        variant: "error",
+      });
+    }
   };
 
   // agent 不存在（可能被删除或 id 错误）

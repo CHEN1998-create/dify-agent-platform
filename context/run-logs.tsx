@@ -10,6 +10,7 @@ import {
   ReactNode,
 } from "react";
 import { useAuth } from "@/context/auth-context";
+import { createClient } from "@/lib/supabase/client";
 
 export interface RunLog {
   id: string;
@@ -27,34 +28,46 @@ export interface RunLog {
 
 interface RunLogsStoreValue {
   logs: RunLog[];
-  createLog: (agentId: string, sessionId: string, model: string, agentName: string, opts?: { status?: RunLog["status"]; latencyMs?: number; errorMessage?: string; promptTokens?: number; completionTokens?: number }) => RunLog;
+  loading: boolean;
+  createLog: (
+    agentId: string,
+    sessionId: string,
+    model: string,
+    agentName: string,
+    opts?: {
+      status?: RunLog["status"];
+      latencyMs?: number;
+      errorMessage?: string;
+      promptTokens?: number;
+      completionTokens?: number;
+    }
+  ) => Promise<RunLog>;
   getLog: (id: string) => RunLog | undefined;
   getSessionLogs: (sessionId: string) => RunLog[];
-  clearLogs: () => void;
+  clearLogs: () => Promise<void>;
 }
 
 const Ctx = createContext<RunLogsStoreValue | undefined>(undefined);
-
-function storageKey(userId: string | null) {
-  return `agent-studio:run-logs:${userId ?? "anon"}:v1`;
-}
 
 function uid(p = "log") {
   return `${p}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function load(key: string): RunLog[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-  } catch { /* noop */ }
-  return [];
-}
-
-function save(key: string, data: RunLog[]) {
-  if (typeof window === "undefined") return;
-  try { window.localStorage.setItem(key, JSON.stringify(data)); } catch { /* quota */ }
+/** DB 行 → 前端 RunLog */
+function rowToLog(row: Record<string, unknown>): RunLog {
+  return {
+    id: row.id as string,
+    agentId: (row.agent_id as string) || "",
+    agentName: (row.agent_name as string) || "",
+    sessionId: (row.session_id as string) || "",
+    model: (row.model as string) || "",
+    status: (row.status as RunLog["status"]) || "success",
+    latencyMs: Number(row.latency_ms ?? 0),
+    promptTokens: Number(row.prompt_tokens ?? 0),
+    completionTokens: Number(row.completion_tokens ?? 0),
+    createdAt: (row.created_at as string) ?? new Date().toISOString(),
+    errorMessage: (row.error_message as string) || undefined,
+  };
 }
 
 export function RunLogsProvider({ children }: { children: ReactNode }) {
@@ -62,40 +75,81 @@ export function RunLogsProvider({ children }: { children: ReactNode }) {
   const userId = user?.id ?? null;
 
   const [logs, setLogs] = useState<RunLog[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // userId 变化 → 加载对应用户的日志
+  // userId 变化 → 从 Supabase 加载
   useEffect(() => {
-    setLogs(load(storageKey(userId)));
+    if (!userId) {
+      setLogs([]);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from("run_logs")
+          .select("*")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false })
+          .limit(500);
+
+        if (cancelled) return;
+        if (error) {
+          console.error("加载运行日志失败:", error.message);
+          setLogs([]);
+        } else {
+          setLogs((data ?? []).map(rowToLog));
+        }
+      } catch (err) {
+        console.error("加载运行日志异常:", err);
+        if (!cancelled) setLogs([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
 
-  // 持久化（未登录时跳过）
-  useEffect(() => {
-    if (!userId) return;
-    save(storageKey(userId), logs);
-  }, [logs, userId]);
-
   const createLog = useCallback<RunLogsStoreValue["createLog"]>(
-    (agentId, sessionId, model, agentName, opts = {}) => {
-      const latencyMs = opts.latencyMs ?? Math.floor(300 + Math.random() * 1800);
-      const promptTokens = opts.promptTokens ?? Math.floor(40 + Math.random() * 200);
-      const completionTokens = opts.completionTokens ?? Math.floor(60 + Math.random() * 400);
-      const log: RunLog = {
+    async (agentId, sessionId, model, agentName, opts = {}) => {
+      const now = new Date().toISOString();
+      const insertData = {
         id: uid(),
-        agentId,
-        agentName,
-        sessionId,
+        user_id: userId,
+        agent_id: agentId,
+        agent_name: agentName,
+        session_id: sessionId,
         model,
         status: opts.status ?? "success",
-        latencyMs,
-        promptTokens,
-        completionTokens,
-        createdAt: new Date().toISOString(),
-        errorMessage: opts.errorMessage,
+        latency_ms: opts.latencyMs ?? 0,
+        prompt_tokens: opts.promptTokens ?? 0,
+        completion_tokens: opts.completionTokens ?? 0,
+        error_message: opts.errorMessage ?? null,
+        created_at: now,
       };
+
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("run_logs")
+        .insert(insertData)
+        .select("*")
+        .single();
+
+      if (error) throw new Error(`写入运行日志失败: ${error.message}`);
+
+      const log = rowToLog(data!);
       setLogs((prev) => [log, ...prev]);
       return log;
     },
-    []
+    [userId]
   );
 
   const getLog = useCallback(
@@ -104,12 +158,21 @@ export function RunLogsProvider({ children }: { children: ReactNode }) {
   );
 
   const getSessionLogs = useCallback(
-    (sessionId: string) =>
-      logs.filter((l) => l.sessionId === sessionId),
+    (sessionId: string) => logs.filter((l) => l.sessionId === sessionId),
     [logs]
   );
 
-  const clearLogs = useCallback(() => setLogs([]), []);
+  const clearLogs = useCallback(async () => {
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("run_logs")
+      .delete()
+      .eq("user_id", userId!);
+
+    if (error) throw new Error(`清空日志失败: ${error.message}`);
+
+    setLogs([]);
+  }, [userId]);
 
   const value = useMemo<RunLogsStoreValue>(
     () => ({
@@ -117,12 +180,13 @@ export function RunLogsProvider({ children }: { children: ReactNode }) {
         (a, b) =>
           new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       ),
+      loading,
       createLog,
       getLog,
       getSessionLogs,
       clearLogs,
     }),
-    [logs, createLog, getLog, getSessionLogs, clearLogs]
+    [logs, loading, createLog, getLog, getSessionLogs, clearLogs]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

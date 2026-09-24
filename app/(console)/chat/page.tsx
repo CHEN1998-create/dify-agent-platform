@@ -24,9 +24,13 @@ export default function ChatHomePage() {
     agents.find((a) => a.status === "published") ||
     agents[0];
 
-  const handleStart = (agentId: string) => {
-    const session = createSession(agentId);
-    router.push(`/chat/${session.id}`);
+  const handleStart = async (agentId: string) => {
+    try {
+      const session = await createSession(agentId);
+      router.push(`/chat/${session.id}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "创建会话失败", { variant: "error" });
+    }
   };
 
   if (agents.length === 0) {

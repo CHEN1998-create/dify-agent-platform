@@ -31,20 +31,28 @@ export function ChatSidebar({ selectedAgentId }: Props = {}) {
     agents.find((a) => a.status === "published") ??
     agents[0];
 
-  const handleNewChat = () => {
+  const handleNewChat = async () => {
     if (!currentAgent) {
       toast("没有可用的智能体", { variant: "error" });
       return;
     }
-    const session = createSession(currentAgent.id);
-    router.push(`/chat/${session.id}`);
+    try {
+      const session = await createSession(currentAgent.id);
+      router.push(`/chat/${session.id}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "创建会话失败", { variant: "error" });
+    }
   };
 
-  const handleDeleteSession = (id: string, title: string) => {
-    deleteSession(id);
-    toast("已删除会话", { description: title, variant: "info" });
-    if (pathname === `/chat/${id}`) {
-      router.replace("/chat");
+  const handleDeleteSession = async (id: string, title: string) => {
+    try {
+      await deleteSession(id);
+      toast("已删除会话", { description: title, variant: "info" });
+      if (pathname === `/chat/${id}`) {
+        router.replace("/chat");
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "删除失败", { variant: "error" });
     }
   };
 
@@ -53,10 +61,14 @@ export function ChatSidebar({ selectedAgentId }: Props = {}) {
     setEditTitle(title);
   };
 
-  const confirmRename = () => {
+  const confirmRename = async () => {
     if (editingSession && editTitle.trim()) {
-      renameSession(editingSession, editTitle.trim());
-      toast("已重命名", { variant: "success" });
+      try {
+        await renameSession(editingSession, editTitle.trim());
+        toast("已重命名", { variant: "success" });
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "重命名失败", { variant: "error" });
+      }
     }
     setEditingSession(null);
     setEditTitle("");

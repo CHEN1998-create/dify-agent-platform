@@ -9,13 +9,10 @@ import {
   useState,
   ReactNode,
 } from "react";
-import {
-  agents as seedAgents,
-  type Agent,
-  type AgentStatus,
-} from "@/lib/mock";
+import { type Agent, type AgentStatus } from "@/lib/mock";
 import { DEFAULT_MODEL } from "@/lib/models";
 import { useAuth } from "@/context/auth-context";
+import { createClient } from "@/lib/supabase/client";
 
 export interface AgentCreateInput {
   name: string;
@@ -34,118 +31,179 @@ export interface AgentUpdateInput {
 
 interface AgentStoreValue {
   agents: Agent[];
+  loading: boolean;
   getAgent: (id: string) => Agent | undefined;
-  createAgent: (input: AgentCreateInput) => Agent;
-  updateAgent: (id: string, input: AgentUpdateInput) => Agent | undefined;
-  deleteAgent: (id: string) => void;
-  publishAgent: (id: string) => Agent | undefined;
+  createAgent: (input: AgentCreateInput) => Promise<Agent>;
+  updateAgent: (id: string, input: AgentUpdateInput) => Promise<void>;
+  deleteAgent: (id: string) => Promise<void>;
+  publishAgent: (id: string) => Promise<void>;
 }
 
 const AgentStoreContext = createContext<AgentStoreValue | undefined>(undefined);
 
-function storageKey(userId: string | null) {
-  return `agent-studio:agents:${userId ?? "anon"}:v1`;
-}
-
-function loadFromStorage(key: string): Agent[] | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed as Agent[];
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function saveToStorage(key: string, agents: Agent[]) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(agents));
-  } catch {
-    /* ignore quota errors */
-  }
-}
-
-function uid() {
-  return "agent-" + Math.random().toString(36).slice(2, 10);
+/** DB 行 → 前端 Agent 对象 */
+function rowToAgent(row: Record<string, unknown>): Agent {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    description: (row.description as string) || "还没有描述",
+    systemPrompt: (row.system_prompt as string) || "你是一个有帮助的 AI 助手。",
+    model: (row.model as string) || DEFAULT_MODEL,
+    temperature: Number(row.temperature ?? 0.7),
+    maxTokens: Number(row.max_tokens ?? 2048),
+    status: (row.status as AgentStatus) || "draft",
+    createdAt: (row.created_at as string)?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
+    lastActive: "刚刚",
+    runs: Number(row.runs ?? 0),
+  };
 }
 
 export function AgentProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const userId = user?.id ?? null;
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // 首次渲染不依赖 localStorage（userId 可能还没恢复），保持 seed 让界面不空白
-  const [agents, setAgents] = useState<Agent[]>(seedAgents);
-
-  // userId 变化 → 切换到对应用户的 localStorage key
+  // userId 变化 → 从 Supabase 加载
   useEffect(() => {
-    const key = storageKey(userId);
-    const saved = loadFromStorage(key);
-    setAgents(saved ?? seedAgents);
+    if (!userId) {
+      setAgents([]);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from("agents")
+          .select("*")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false });
+
+        if (cancelled) return;
+        if (error) {
+          console.error("加载 agents 失败:", error.message);
+          setAgents([]);
+        } else {
+          setAgents((data ?? []).map(rowToAgent));
+        }
+      } catch (err) {
+        console.error("加载 agents 异常:", err);
+        if (!cancelled) setAgents([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
-
-  // 数据变化 → 持久化（未登录时跳过）
-  useEffect(() => {
-    if (!userId) return;
-    saveToStorage(storageKey(userId), agents);
-  }, [agents, userId]);
 
   const getAgent = useCallback(
     (id: string) => agents.find((a) => a.id === id),
     [agents]
   );
 
-  const createAgent = useCallback((input: AgentCreateInput): Agent => {
-    const now = new Date();
-    const agent: Agent = {
-      id: uid(),
-      name: input.name.trim(),
-      description: input.description.trim() || "还没有描述",
-      systemPrompt: "你是一个有帮助的 AI 助手。",
-      model: DEFAULT_MODEL,
-      temperature: 0.7,
-      maxTokens: 2048,
-      status: "draft",
-      createdAt: now.toISOString().slice(0, 10),
-      lastActive: "刚刚",
-      runs: 0,
-    };
-    setAgents((prev) => [agent, ...prev]);
-    return agent;
-  }, []);
+  const createAgent = useCallback(
+    async (input: AgentCreateInput): Promise<Agent> => {
+      const supabase = createClient();
+      const insertData = {
+        user_id: userId,
+        name: input.name.trim(),
+        description: input.description.trim() || "还没有描述",
+        system_prompt: "你是一个有帮助的 AI 助手。",
+        model: DEFAULT_MODEL,
+        temperature: 0.7,
+        max_tokens: 2048,
+        status: "draft",
+        runs: 0,
+      };
+
+      const { data, error } = await supabase
+        .from("agents")
+        .insert(insertData)
+        .select("*")
+        .single();
+
+      if (error) throw new Error(`创建智能体失败: ${error.message}`);
+
+      const agent = rowToAgent(data!);
+      setAgents((prev) => [agent, ...prev]);
+      return agent;
+    },
+    [userId]
+  );
 
   const updateAgent = useCallback(
-    (id: string, input: AgentUpdateInput): Agent | undefined => {
-      let updated: Agent | undefined;
+    async (id: string, input: AgentUpdateInput): Promise<void> => {
+      const supabase = createClient();
+      const updateData: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (input.name !== undefined) updateData.name = input.name;
+      if (input.description !== undefined) updateData.description = input.description;
+      if (input.systemPrompt !== undefined) updateData.system_prompt = input.systemPrompt;
+      if (input.model !== undefined) updateData.model = input.model;
+      if (input.temperature !== undefined) updateData.temperature = input.temperature;
+      if (input.maxTokens !== undefined) updateData.max_tokens = input.maxTokens;
+      if (input.status !== undefined) updateData.status = input.status;
+
+      const { error } = await supabase
+        .from("agents")
+        .update(updateData)
+        .eq("id", id)
+        .eq("user_id", userId!);
+
+      if (error) throw new Error(`更新智能体失败: ${error.message}`);
+
+      // 本地同步
       setAgents((prev) =>
         prev.map((a) => {
           if (a.id !== id) return a;
-          updated = { ...a, ...input };
+          const updated = { ...a };
+          if (input.name !== undefined) updated.name = input.name;
+          if (input.description !== undefined) updated.description = input.description;
+          if (input.systemPrompt !== undefined) updated.systemPrompt = input.systemPrompt;
+          if (input.model !== undefined) updated.model = input.model;
+          if (input.temperature !== undefined) updated.temperature = input.temperature;
+          if (input.maxTokens !== undefined) updated.maxTokens = input.maxTokens;
+          if (input.status !== undefined) updated.status = input.status;
           return updated;
         })
       );
-      return updated;
     },
-    []
+    [userId]
   );
 
-  const deleteAgent = useCallback((id: string) => {
-    setAgents((prev) => prev.filter((a) => a.id !== id));
-  }, []);
+  const deleteAgent = useCallback(
+    async (id: string): Promise<void> => {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("agents")
+        .delete()
+        .eq("id", id)
+        .eq("user_id", userId!);
+
+      if (error) throw new Error(`删除智能体失败: ${error.message}`);
+
+      setAgents((prev) => prev.filter((a) => a.id !== id));
+    },
+    [userId]
+  );
 
   const publishAgent = useCallback(
-    (id: string): Agent | undefined => {
-      return updateAgent(id, { status: "published" });
+    async (id: string): Promise<void> => {
+      await updateAgent(id, { status: "published" });
     },
     [updateAgent]
   );
 
   const value = useMemo<AgentStoreValue>(
-    () => ({ agents, getAgent, createAgent, updateAgent, deleteAgent, publishAgent }),
-    [agents, getAgent, createAgent, updateAgent, deleteAgent, publishAgent]
+    () => ({ agents, loading, getAgent, createAgent, updateAgent, deleteAgent, publishAgent }),
+    [agents, loading, getAgent, createAgent, updateAgent, deleteAgent, publishAgent]
   );
 
   return (

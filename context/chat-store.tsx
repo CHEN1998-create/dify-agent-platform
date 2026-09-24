@@ -14,6 +14,7 @@ import { useToast } from "@/components/ui/toast";
 import { DEFAULT_MODEL } from "@/lib/models";
 import { useAuth } from "@/context/auth-context";
 import { useKnowledgeStore } from "@/context/knowledge-store";
+import { createClient } from "@/lib/supabase/client";
 
 export interface ChatSession {
   id: string;
@@ -43,50 +44,25 @@ export interface OnRunResult {
 interface ChatStoreValue {
   sessions: ChatSession[];
   messages: ChatMessage[];
-  createSession: (agentId: string, title?: string) => ChatSession;
-  deleteSession: (sessionId: string) => void;
-  renameSession: (sessionId: string, title: string) => void;
+  loading: boolean;
+  createSession: (agentId: string, title?: string) => Promise<ChatSession>;
+  deleteSession: (sessionId: string) => Promise<void>;
+  renameSession: (sessionId: string, title: string) => Promise<void>;
   getSession: (sessionId: string) => ChatSession | undefined;
   getSessionMessages: (sessionId: string) => ChatMessage[];
   sendMessage: (
     sessionId: string,
     content: string
   ) => Promise<{ userMsg: ChatMessage; reply: ChatMessage }>;
-  deleteMessages: (sessionId: string) => void;
+  deleteMessages: (sessionId: string) => Promise<void>;
   /** 当前是否有 API 调用在进行中（发送中的会话 ID） */
   sendingSessionId: string | null;
 }
 
 const ChatStoreContext = createContext<ChatStoreValue | undefined>(undefined);
 
-function sessionsKey(userId: string | null) {
-  return `agent-studio:chat-sessions:${userId ?? "anon"}:v1`;
-}
-function messagesKey(userId: string | null) {
-  return `agent-studio:chat-messages:${userId ?? "anon"}:v1`;
-}
-
 function uid(prefix = "id") {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function load<T>(key: string): T | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : null;
-  } catch {
-    return null;
-  }
-}
-
-function save(key: string, data: unknown) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(data));
-  } catch {
-    /* quota */
-  }
 }
 
 function fmtTime() {
@@ -102,6 +78,28 @@ function timeAgo(iso: string) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h} 小时前`;
   return Math.floor(h / 24) + " 天前";
+}
+
+/** DB 行 → 前端 ChatSession */
+function rowToSession(row: Record<string, unknown>): ChatSession {
+  return {
+    id: row.id as string,
+    agentId: (row.agent_id as string) || "",
+    title: (row.title as string) || "新会话",
+    createdAt: (row.created_at as string) ?? new Date().toISOString(),
+    updatedAt: (row.updated_at as string) ?? new Date().toISOString(),
+  };
+}
+
+/** DB 行 → 前端 ChatMessage */
+function rowToMessage(row: Record<string, unknown>): ChatMessage {
+  return {
+    id: row.id as string,
+    sessionId: (row.session_id as string) || "",
+    role: (row.role as "user" | "assistant") || "user",
+    content: (row.content as string) || "",
+    createdAt: (row.created_at as string) ?? new Date().toISOString(),
+  };
 }
 
 // ============ 知识库关键词检索（MVP，不用 embedding） ============
@@ -120,13 +118,12 @@ const STOPWORDS = new Set([
 
 /** 从用户消息提取关键词（去停用词 + 2~20 字符） */
 function extractKeywords(text: string): string[] {
-  // 按中英文标点 + 空白切
   const tokens = text
     .toLowerCase()
     .split(/[\s.,;:!?。，；：！？、…\-—_'"""''（）()【】\[\]《》<>/\\|=+*#@$%^&~`0-9]+/)
     .map((t) => t.trim())
     .filter((t) => t.length >= 2 && t.length <= 20 && !STOPWORDS.has(t));
-  return Array.from(new Set(tokens)); // 去重
+  return Array.from(new Set(tokens));
 }
 
 /** 在 chunks 里做关键词匹配，返回 top N 命中片段 */
@@ -134,7 +131,6 @@ function retrieveChunks(query: string, chunks: string[], topN = 3): string[] {
   const keywords = extractKeywords(query);
   if (keywords.length === 0 || chunks.length === 0) return [];
 
-  // 每个 chunk 统计命中的关键词数量
   const scored = chunks
     .map((chunk) => {
       const hits = keywords.filter((kw) => chunk.toLowerCase().includes(kw)).length;
@@ -163,11 +159,10 @@ interface ChatProviderProps {
     model: string,
     agentName: string,
     result: OnRunResult
-  ) => void;
+  ) => Promise<void> | void;
 }
 
 export function ChatProvider({ children, onRun }: ChatProviderProps) {
-  // 从 agent-store 拿 agent 配置（systemPrompt/model/temperature/maxTokens）
   const { getAgent } = useAgentStore();
   const { toast } = useToast();
   const { user } = useAuth();
@@ -177,52 +172,134 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sendingSessionId, setSendingSessionId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // userId 变化 → 加载对应用户的数据
+  // userId 变化 → 从 Supabase 加载 sessions + messages
   useEffect(() => {
-    setSessions(load<ChatSession[]>(sessionsKey(userId)) ?? []);
-    setMessages(load<ChatMessage[]>(messagesKey(userId)) ?? []);
+    if (!userId) {
+      setSessions([]);
+      setMessages([]);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      try {
+        const supabase = createClient();
+        const [sessRes, msgRes] = await Promise.all([
+          supabase
+            .from("chat_sessions")
+            .select("*")
+            .eq("user_id", userId)
+            .order("updated_at", { ascending: false }),
+          supabase
+            .from("chat_messages")
+            .select("*")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: true }),
+        ]);
+
+        if (cancelled) return;
+        if (sessRes.error) {
+          console.error("加载会话失败:", sessRes.error.message);
+          setSessions([]);
+        } else {
+          setSessions((sessRes.data ?? []).map(rowToSession));
+        }
+        if (msgRes.error) {
+          console.error("加载消息失败:", msgRes.error.message);
+          setMessages([]);
+        } else {
+          setMessages((msgRes.data ?? []).map(rowToMessage));
+        }
+      } catch (err) {
+        console.error("加载对话数据异常:", err);
+        if (!cancelled) {
+          setSessions([]);
+          setMessages([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
 
-  // 持久化（未登录时跳过）
-  useEffect(() => {
-    if (!userId) return;
-    save(sessionsKey(userId), sessions);
-  }, [sessions, userId]);
-  useEffect(() => {
-    if (!userId) return;
-    save(messagesKey(userId), messages);
-  }, [messages, userId]);
-
   const createSession = useCallback(
-    (agentId: string, title?: string): ChatSession => {
+    async (agentId: string, title?: string): Promise<ChatSession> => {
       const now = new Date().toISOString();
       const agentName = getAgent(agentId)?.name ?? "智能体";
-      const session: ChatSession = {
-        id: uid("sess"),
-        agentId,
-        title: title ?? `新会话 · ${agentName}`,
-        createdAt: now,
-        updatedAt: now,
-      };
+      const id = uid("sess");
+
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("chat_sessions")
+        .insert({
+          id,
+          user_id: userId,
+          agent_id: agentId,
+          title: title ?? `新会话 · ${agentName}`,
+          created_at: now,
+          updated_at: now,
+        })
+        .select("*")
+        .single();
+
+      if (error) throw new Error(`创建会话失败: ${error.message}`);
+
+      const session = rowToSession(data!);
       setSessions((prev) => [session, ...prev]);
       return session;
     },
-    [getAgent]
+    [getAgent, userId]
   );
 
-  const deleteSession = useCallback((id: string) => {
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    setMessages((prev) => prev.filter((m) => m.sessionId !== id));
-  }, []);
+  const deleteSession = useCallback(
+    async (id: string): Promise<void> => {
+      const supabase = createClient();
+      // 先删消息，再删会话
+      const [, sessErr] = await Promise.all([
+        supabase.from("chat_messages").delete().eq("session_id", id),
+        supabase
+          .from("chat_sessions")
+          .delete()
+          .eq("id", id)
+          .eq("user_id", userId!),
+      ]);
 
-  const renameSession = useCallback((id: string, title: string) => {
-    setSessions((prev) =>
-      prev.map((s) =>
-        s.id === id ? { ...s, title, updatedAt: new Date().toISOString() } : s
-      )
-    );
-  }, []);
+      const err = sessErr as { message?: string } | null;
+      if (err?.message) throw new Error(`删除会话失败: ${err.message}`);
+
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      setMessages((prev) => prev.filter((m) => m.sessionId !== id));
+    },
+    [userId]
+  );
+
+  const renameSession = useCallback(
+    async (id: string, title: string): Promise<void> => {
+      const now = new Date().toISOString();
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("chat_sessions")
+        .update({ title, updated_at: now })
+        .eq("id", id)
+        .eq("user_id", userId!);
+
+      if (error) throw new Error(`重命名会话失败: ${error.message}`);
+
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, title, updatedAt: now } : s))
+      );
+    },
+    [userId]
+  );
 
   const getSession = useCallback(
     (id: string) => sessions.find((s) => s.id === id),
@@ -240,9 +317,21 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
     [messages]
   );
 
-  const deleteMessages = useCallback((sessionId: string) => {
-    setMessages((prev) => prev.filter((m) => m.sessionId !== sessionId));
-  }, []);
+  const deleteMessages = useCallback(
+    async (sessionId: string): Promise<void> => {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("chat_messages")
+        .delete()
+        .eq("session_id", sessionId)
+        .eq("user_id", userId!);
+
+      if (error) throw new Error(`清空消息失败: ${error.message}`);
+
+      setMessages((prev) => prev.filter((m) => m.sessionId !== sessionId));
+    },
+    [userId]
+  );
 
   const sendMessage = useCallback(
     async (
@@ -264,7 +353,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       const agent = getAgent(session.agentId);
       const agentName = agent?.name ?? "智能体";
 
-      // 1. 先插入用户消息
+      // 1. 乐观插入用户消息（本地立即显示），同时持久化到 Supabase
       const userMsg: ChatMessage = {
         id: uid("m"),
         sessionId,
@@ -274,20 +363,43 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       };
       setMessages((prev) => [...prev, userMsg]);
 
+      // 持久化用户消息（确保持久化成功后再调 LLM）
+      const supabase = createClient();
+      const { error: userMsgErr } = await supabase.from("chat_messages").insert({
+        id: userMsg.id,
+        session_id: sessionId,
+        user_id: userId,
+        role: "user",
+        content: trimmed,
+        created_at: now,
+      });
+      if (userMsgErr) {
+        toast("消息保存失败", {
+          description: userMsgErr.message,
+          variant: "error",
+        });
+        throw new Error(`保存用户消息失败: ${userMsgErr.message}`);
+      }
+
       // 更新 session updatedAt + 自动标题（第一条消息）
+      const isFirstMsg = !messages.some((m) => m.sessionId === sessionId);
+      const newTitle = isFirstMsg ? trimmed.slice(0, 30) : session.title;
       setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== sessionId) return s;
-          const isFirstMsg = !messages.some(
-            (m) => m.sessionId === sessionId
-          );
-          return {
-            ...s,
-            updatedAt: now,
-            title: isFirstMsg ? trimmed.slice(0, 30) : s.title,
-          };
-        })
+        prev.map((s) =>
+          s.id === sessionId
+            ? { ...s, updatedAt: now, title: newTitle }
+            : s
+        )
       );
+      // session 更新 fire-and-forget（标题/时间丢失可接受）
+      supabase
+        .from("chat_sessions")
+        .update({ updated_at: now, title: newTitle })
+        .eq("id", sessionId)
+        .eq("user_id", userId!)
+        .then(({ error: e }) => {
+          if (e) console.error("更新会话失败:", e.message);
+        });
 
       // 2. 构造传给 LLM 的消息（system prompt + 历史 + 当前 user）
       const historyMsgs = messages
@@ -335,7 +447,6 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
         });
 
         if (resp.status === 401) {
-          // 鉴权失败 —— toast 提示，不插入 AI 回复，不写日志
           toast("请先登录", { description: "登录后才能使用 AI 对话", variant: "error" });
           setSendingSessionId(null);
           throw new Error("AUTH_REQUIRED");
@@ -355,9 +466,8 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
           errorMessage: data.errorMessage,
         };
       } catch (err: unknown) {
-        // 401 已经 toast 并 early return 过了，这里 skip
         if (err instanceof Error && err.message === "AUTH_REQUIRED") {
-          throw err; // 重新抛出，让调用方知道发送失败
+          throw err;
         }
         const msg = err instanceof Error ? err.message : String(err);
         llmResult = {
@@ -391,10 +501,26 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       };
       setMessages((prev) => [...prev, reply]);
 
+      // 持久化 AI 回复
+      const { error: replyErr } = await supabase.from("chat_messages").insert({
+        id: reply.id,
+        session_id: sessionId,
+        user_id: userId,
+        role: "assistant",
+        content: replyContent,
+        created_at: reply.createdAt,
+      });
+      if (replyErr) {
+        toast("AI 回复保存失败", {
+          description: replyErr.message,
+          variant: "error",
+        });
+      }
+
       // 5. 回调：让上层写入 run_logs（真实数据）
       if (onRun && agent) {
         try {
-          onRun(agent.id, sessionId, agent.model, agentName, llmResult);
+          await onRun(agent.id, sessionId, agent.model, agentName, llmResult);
         } catch {
           /* 日志写入失败不影响对话 */
         }
@@ -402,7 +528,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
 
       return { userMsg, reply };
     },
-    [messages, sessions, getAgent, onRun, sendingSessionId]
+    [messages, sessions, getAgent, onRun, sendingSessionId, getAllChunks, toast, userId]
   );
 
   const value = useMemo<ChatStoreValue>(
@@ -414,7 +540,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
             new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
         ),
       messages,
-      sendingSessionId,
+      loading,
       createSession,
       deleteSession,
       renameSession,
@@ -422,11 +548,12 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       getSessionMessages,
       sendMessage,
       deleteMessages,
+      sendingSessionId,
     }),
     [
       sessions,
       messages,
-      sendingSessionId,
+      loading,
       createSession,
       deleteSession,
       renameSession,
@@ -434,6 +561,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
       getSessionMessages,
       sendMessage,
       deleteMessages,
+      sendingSessionId,
     ]
   );
 

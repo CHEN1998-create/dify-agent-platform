@@ -1,86 +1,32 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 
 /**
- * 从 localStorage 遍历所有 agent-studio 开头的 key，聚合出全平台统计。
+ * 从 Supabase 聚合全平台统计。
  *
- * MVP 阶段的数据来源（都是 localStorage，按 userId 隔离的）：
- *   agent-studio:agents:{userId}:v1         → agents
- *   agent-studio:run-logs:{userId}:v1       → run-logs
- *   agent-studio:knowledge:{userId}:v1      → knowledge
- *   agent-studio:chat-sessions:{userId}:v1  → chat sessions
- *
- * 因为是纯前端统计，只能看到当前浏览器里登录过的所有用户的数据。
- * 接 Supabase DB 后应改为服务端聚合，这里保留作为 MVP 实现。
+ * 注意：RLS 默认只允许用户读自己的行。要让 admin 看到全平台数据，
+ * 需要在 Supabase 给每张表加一条 admin 读策略：
+ *   USING ((auth.jwt() -> 'user_metadata' ->> 'role') = 'admin')
+ * 未加策略前，admin 只能看到自己的数据。
  */
 
-const KEY_PREFIX = "agent-studio:";
-
-interface ParsedKey {
-  type: "agents" | "run-logs" | "knowledge" | "chat-sessions" | "chat-messages" | "unknown";
-  userId: string | null;
-  full: string;
-}
-
-function parseStorageKey(key: string): ParsedKey {
-  // 格式: agent-studio:{type}:{userId}:v1
-  const parts = key.split(":");
-  if (parts.length < 4 || parts[0] !== "agent-studio") {
-    return { type: "unknown", userId: null, full: key };
-  }
-  const [, type, userId] = parts;
-  const validTypes = new Set([
-    "agents",
-    "run-logs",
-    "knowledge",
-    "chat-sessions",
-    "chat-messages",
-  ]);
-  return {
-    type: validTypes.has(type) ? (type as ParsedKey["type"]) : "unknown",
-    userId: userId === "anon" ? null : userId,
-    full: key,
-  };
-}
-
-function parseJSON<T>(raw: string | null): T | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
 export interface AdminStats {
-  /** 当前浏览器 localStorage 里能聚合到的 userId 数量 */
+  /** 能聚合到的 userId 数量 */
   trackedUsers: number;
-  /** 聚合到的 agent 总数 */
   totalAgents: number;
-  /** 聚合到的会话总数 */
   totalSessions: number;
-  /** 聚合到的调用日志总数 */
   totalRuns: number;
-  /** 成功调用数 */
   successRuns: number;
-  /** 失败调用数 */
   errorRuns: number;
-  /** 总 prompt tokens */
   totalPromptTokens: number;
-  /** 总 completion tokens */
   totalCompletionTokens: number;
-  /** 平均耗时（ms） */
   avgLatencyMs: number;
-  /** 模型调用分布：{ model: 调用次数 } */
   modelDistribution: Record<string, number>;
-  /** 近 7 天按日期的调用趋势：[{ date, runs, errors }] */
   trend7d: { date: string; runs: number; errors: number }[];
-  /** 知识库文档总数 */
   totalKnowledgeDocs: number;
-  /** 每个用户的简要统计（供用户列表用） */
   userStats: UserStat[];
-  /** 是否还在加载 */
   loading: boolean;
 }
 
@@ -126,113 +72,105 @@ function makeEmptyTrend7d(): { date: string; runs: number; errors: number }[] {
   return out;
 }
 
-/** 核心聚合逻辑 —— 遍历 localStorage 所有 agent-studio key */
-export function aggregateAdminStats(): AdminStats {
-  if (typeof window === "undefined") return { ...emptyStats(), loading: false };
+interface LogRow {
+  user_id: string | null;
+  status: string;
+  latency_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  model: string;
+  created_at: string;
+}
 
+/** 核心聚合逻辑 —— 从 Supabase 查询后聚合 */
+export async function aggregateAdminStats(): Promise<AdminStats> {
   const stats = emptyStats();
+  const supabase = createClient();
+
+  // 并行查 4 张表（只 select 聚合需要的字段）
+  const [agentsRes, logsRes, sessRes, docsRes] = await Promise.all([
+    supabase.from("agents").select("id, user_id"),
+    supabase
+      .from("run_logs")
+      .select(
+        "user_id, status, latency_ms, prompt_tokens, completion_tokens, model, created_at"
+      )
+      .limit(2000),
+    supabase.from("chat_sessions").select("id, user_id"),
+    supabase.from("knowledge_documents").select("id, user_id"),
+  ]);
+
   const seenUsers = new Set<string | null>();
   const userMap = new Map<string | null, UserStat>();
 
-  // 先初始化 userMap 里的条目
-  for (let i = 0; i < window.localStorage.length; i++) {
-    const key = window.localStorage.key(i);
-    if (!key?.startsWith(KEY_PREFIX)) continue;
-    const parsed = parseStorageKey(key);
-    if (parsed.type === "unknown") continue;
-    seenUsers.add(parsed.userId);
-    if (!userMap.has(parsed.userId)) {
-      userMap.set(parsed.userId, {
-        userId: parsed.userId,
+  const ensureUser = (uid: string | null) => {
+    seenUsers.add(uid);
+    if (!userMap.has(uid)) {
+      userMap.set(uid, {
+        userId: uid,
         totalAgents: 0,
         totalRuns: 0,
         totalTokens: 0,
         lastActive: null,
       });
     }
+    return userMap.get(uid)!;
+  };
+
+  // agents
+  if (agentsRes.data) {
+    stats.totalAgents = agentsRes.data.length;
+    for (const row of agentsRes.data) {
+      ensureUser(row.user_id as string | null).totalAgents++;
+    }
   }
 
-  // 遍历所有 key，按类型累加
+  // run_logs（核心指标）
   let latencySum = 0;
   let latencyCount = 0;
-
-  for (let i = 0; i < window.localStorage.length; i++) {
-    const key = window.localStorage.key(i);
-    if (!key?.startsWith(KEY_PREFIX)) continue;
-    const parsed = parseStorageKey(key);
-    const raw = window.localStorage.getItem(key);
-    if (!raw) continue;
-
-    switch (parsed.type) {
-      case "agents": {
-        const arr = parseJSON<Array<{ id: string }>>(raw);
-        if (!arr) break;
-        stats.totalAgents += arr.length;
-        const u = userMap.get(parsed.userId);
-        if (u) u.totalAgents += arr.length;
-        break;
+  if (logsRes.data) {
+    const logs = logsRes.data as LogRow[];
+    stats.totalRuns = logs.length;
+    for (const log of logs) {
+      const u = ensureUser(log.user_id as string | null);
+      if (log.status === "success") stats.successRuns++;
+      else if (log.status === "error") stats.errorRuns++;
+      stats.totalPromptTokens += log.prompt_tokens ?? 0;
+      stats.totalCompletionTokens += log.completion_tokens ?? 0;
+      u.totalTokens +=
+        (log.prompt_tokens ?? 0) + (log.completion_tokens ?? 0);
+      if (log.latency_ms > 0) {
+        latencySum += log.latency_ms;
+        latencyCount++;
       }
-      case "run-logs": {
-        const arr = parseJSON<
-          Array<{
-            id: string;
-            status: string;
-            latencyMs: number;
-            promptTokens: number;
-            completionTokens: number;
-            model: string;
-            createdAt: string;
-          }>
-        >(raw);
-        if (!arr) break;
-        stats.totalRuns += arr.length;
-        for (const log of arr) {
-          if (log.status === "success") stats.successRuns++;
-          else if (log.status === "error") stats.errorRuns++;
-          stats.totalPromptTokens += log.promptTokens ?? 0;
-          stats.totalCompletionTokens += log.completionTokens ?? 0;
-          if (log.latencyMs > 0) {
-            latencySum += log.latencyMs;
-            latencyCount++;
-          }
-          // 模型分布
-          const m = log.model ?? "unknown";
-          stats.modelDistribution[m] = (stats.modelDistribution[m] ?? 0) + 1;
-          // 近 7 天趋势
-          const d = new Date(log.createdAt);
-          const daysAgo = Math.floor(
-            (Date.now() - d.getTime()) / (24 * 60 * 60 * 1000)
-          );
-          if (daysAgo >= 0 && daysAgo < 7) {
-            const idx = 6 - daysAgo;
-            stats.trend7d[idx].runs++;
-            if (log.status !== "success") stats.trend7d[idx].errors++;
-          }
-          // 用户维度
-          const u = userMap.get(parsed.userId);
-          if (u) {
-            u.totalRuns++;
-            u.totalTokens += (log.promptTokens ?? 0) + (log.completionTokens ?? 0);
-            if (!u.lastActive || new Date(log.createdAt) > new Date(u.lastActive)) {
-              u.lastActive = log.createdAt;
-            }
-          }
-        }
-        break;
+      const m = log.model ?? "unknown";
+      stats.modelDistribution[m] = (stats.modelDistribution[m] ?? 0) + 1;
+      // 近 7 天趋势
+      const d = new Date(log.created_at);
+      const daysAgo = Math.floor(
+        (Date.now() - d.getTime()) / (24 * 60 * 60 * 1000)
+      );
+      if (daysAgo >= 0 && daysAgo < 7) {
+        const idx = 6 - daysAgo;
+        stats.trend7d[idx].runs++;
+        if (log.status !== "success") stats.trend7d[idx].errors++;
       }
-      case "knowledge": {
-        const arr = parseJSON<Array<{ id: string }>>(raw);
-        if (arr) stats.totalKnowledgeDocs += arr.length;
-        break;
+      // 用户维度
+      u.totalRuns++;
+      if (!u.lastActive || new Date(log.created_at) > new Date(u.lastActive)) {
+        u.lastActive = log.created_at;
       }
-      case "chat-sessions": {
-        const arr = parseJSON<Array<{ id: string }>>(raw);
-        if (arr) stats.totalSessions += arr.length;
-        break;
-      }
-      default:
-        break;
     }
+  }
+
+  // sessions
+  if (sessRes.data) {
+    stats.totalSessions = sessRes.data.length;
+  }
+
+  // knowledge
+  if (docsRes.data) {
+    stats.totalKnowledgeDocs = docsRes.data.length;
   }
 
   stats.trackedUsers = seenUsers.size;
@@ -244,27 +182,30 @@ export function aggregateAdminStats(): AdminStats {
   return stats;
 }
 
-/** React hook —— 在 admin 页面里用，自动监听 localStorage 变化 */
-export function useAdminStats(): AdminStats {
+/** React hook —— 在 admin 页面里用，自动定时刷新 */
+export function useAdminStats(): AdminStats & { refresh: () => void } {
   const [stats, setStats] = useState<AdminStats>(() => ({
     ...emptyStats(),
     loading: true,
   }));
 
-  useEffect(() => {
-    const refresh = () => setStats(aggregateAdminStats());
-    refresh();
-
-    // 监听 storage 事件（同一浏览器多个标签页同步）
-    window.addEventListener("storage", refresh);
-    // 定期刷新（3 秒），因为 run-logs 会持续增加
-    const id = window.setInterval(refresh, 3000);
-
-    return () => {
-      window.removeEventListener("storage", refresh);
-      window.clearInterval(id);
-    };
+  const refresh = useCallback(async () => {
+    setStats((prev) => ({ ...prev, loading: true }));
+    try {
+      const next = await aggregateAdminStats();
+      setStats(next);
+    } catch (err) {
+      console.error("加载 admin 统计失败:", err);
+      setStats({ ...emptyStats(), loading: false });
+    }
   }, []);
 
-  return stats;
+  useEffect(() => {
+    refresh();
+    // 定时刷新（15 秒），run_logs 会持续增加
+    const id = window.setInterval(refresh, 15000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
+  return { ...stats, refresh };
 }

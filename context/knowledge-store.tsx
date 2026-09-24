@@ -10,6 +10,7 @@ import {
   ReactNode,
 } from "react";
 import { useAuth } from "@/context/auth-context";
+import { createClient } from "@/lib/supabase/client";
 
 export interface KnowledgeDoc {
   id: string;
@@ -26,8 +27,9 @@ export interface KnowledgeDoc {
 
 interface KnowledgeStoreValue {
   docs: KnowledgeDoc[];
+  loading: boolean;
   uploadDoc: (file: File) => Promise<KnowledgeDoc>;
-  deleteDoc: (id: string) => void;
+  deleteDoc: (id: string) => Promise<void>;
   getDoc: (id: string) => KnowledgeDoc | undefined;
   /** 给 chat-store 检索用：返回所有 ready 状态的 chunks */
   getAllChunks: () => string[];
@@ -35,26 +37,24 @@ interface KnowledgeStoreValue {
 
 const Ctx = createContext<KnowledgeStoreValue | undefined>(undefined);
 
-function storageKey(userId: string | null) {
-  return `agent-studio:knowledge:${userId ?? "anon"}:v1`;
-}
-
 function uid() {
   return "doc-" + Math.random().toString(36).slice(2, 10);
 }
 
-function load(key: string): KnowledgeDoc[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-  } catch { /* noop */ }
-  return [];
-}
-
-function save(key: string, data: KnowledgeDoc[]) {
-  if (typeof window === "undefined") return;
-  try { window.localStorage.setItem(key, JSON.stringify(data)); } catch { /* quota */ }
+/** DB 行 → 前端 KnowledgeDoc */
+function rowToDoc(row: Record<string, unknown>): KnowledgeDoc {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    size: Number(row.size_bytes ?? 0),
+    content: (row.content as string) || "",
+    chunks: (row.chunks as string[]) || [],
+    // MVP 同步处理，入库即 ready
+    status: "ready",
+    createdAt:
+      (row.created_at as string)?.slice(0, 10) ??
+      new Date().toISOString().slice(0, 10),
+  };
 }
 
 /** 把长文本按段落/长度分块（MVP 方案，不用 embedding） */
@@ -100,19 +100,49 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
   const userId = user?.id ?? null;
 
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // userId 变化 → 加载对应用户的文档
+  // userId 变化 → 从 Supabase 加载
   useEffect(() => {
-    setDocs(load(storageKey(userId)));
+    if (!userId) {
+      setDocs([]);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from("knowledge_documents")
+          .select("*")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false });
+
+        if (cancelled) return;
+        if (error) {
+          console.error("加载知识库文档失败:", error.message);
+          setDocs([]);
+        } else {
+          setDocs((data ?? []).map(rowToDoc));
+        }
+      } catch (err) {
+        console.error("加载知识库文档异常:", err);
+        if (!cancelled) setDocs([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [userId]);
 
-  // 持久化
-  useEffect(() => {
-    if (!userId) return;
-    save(storageKey(userId), docs);
-  }, [docs, userId]);
-
-  const uploadDoc = useCallback<KnowledgeStoreValue["uploadDoc"]>(
+  const uploadDoc = useCallback(
     async (file: File): Promise<KnowledgeDoc> => {
       if (!isSupported(file.name)) {
         throw new Error(
@@ -122,26 +152,47 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
 
       const text = await file.text();
       const chunks = chunkify(text);
+      const now = new Date().toISOString();
 
-      const doc: KnowledgeDoc = {
-        id: uid(),
-        name: file.name,
-        size: file.size,
-        content: text,
-        chunks,
-        status: "ready",
-        createdAt: new Date().toISOString(),
-      };
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("knowledge_documents")
+        .insert({
+          id: uid(),
+          user_id: userId,
+          name: file.name,
+          size_bytes: file.size,
+          content: text,
+          chunks,
+          created_at: now,
+        })
+        .select("*")
+        .single();
 
+      if (error) throw new Error(`上传文档失败: ${error.message}`);
+
+      const doc = rowToDoc(data!);
       setDocs((prev) => [doc, ...prev]);
       return doc;
     },
-    []
+    [userId]
   );
 
-  const deleteDoc = useCallback((id: string) => {
-    setDocs((prev) => prev.filter((d) => d.id !== id));
-  }, []);
+  const deleteDoc = useCallback(
+    async (id: string): Promise<void> => {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("knowledge_documents")
+        .delete()
+        .eq("id", id)
+        .eq("user_id", userId!);
+
+      if (error) throw new Error(`删除文档失败: ${error.message}`);
+
+      setDocs((prev) => prev.filter((d) => d.id !== id));
+    },
+    [userId]
+  );
 
   const getDoc = useCallback(
     (id: string) => docs.find((d) => d.id === id),
@@ -153,8 +204,8 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
   }, [docs]);
 
   const value = useMemo<KnowledgeStoreValue>(
-    () => ({ docs, uploadDoc, deleteDoc, getDoc, getAllChunks }),
-    [docs, uploadDoc, deleteDoc, getDoc, getAllChunks]
+    () => ({ docs, loading, uploadDoc, deleteDoc, getDoc, getAllChunks }),
+    [docs, loading, uploadDoc, deleteDoc, getDoc, getAllChunks]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

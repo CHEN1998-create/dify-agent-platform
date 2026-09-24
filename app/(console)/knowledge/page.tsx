@@ -82,9 +82,13 @@ export default function KnowledgePage() {
   );
 
   const onDelete = useCallback(
-    (id: string, name: string) => {
-      deleteDoc(id);
-      toast(`已删除 ${name}`);
+    async (id: string, name: string) => {
+      try {
+        await deleteDoc(id);
+        toast(`已删除 ${name}`);
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "删除失败", { variant: "error" });
+      }
     },
     [deleteDoc, toast]
   );

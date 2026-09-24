@@ -40,24 +40,38 @@ export default function AgentsPage() {
     setDesc("");
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!name.trim()) {
       toast("请输入智能体名称", { variant: "error" });
       return;
     }
-    const agent = createAgent({ name, description: desc });
-    toast("智能体已创建", { description: agent.name, variant: "success" });
-    setOpenCreate(false);
-    resetForm();
-    // 跳转到配置页
-    window.location.href = `/agents/${agent.id}`;
+    try {
+      const agent = await createAgent({ name, description: desc });
+      toast("智能体已创建", { description: agent.name, variant: "success" });
+      setOpenCreate(false);
+      resetForm();
+      // 跳转到配置页
+      window.location.href = `/agents/${agent.id}`;
+    } catch (err) {
+      toast("创建失败", {
+        description: err instanceof Error ? err.message : String(err),
+        variant: "error",
+      });
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!openDelete) return;
     const target = agents.find((a) => a.id === openDelete);
-    deleteAgent(openDelete);
-    toast("已删除", { description: target?.name, variant: "info" });
+    try {
+      await deleteAgent(openDelete);
+      toast("已删除", { description: target?.name, variant: "info" });
+    } catch (err) {
+      toast("删除失败", {
+        description: err instanceof Error ? err.message : String(err),
+        variant: "error",
+      });
+    }
     setOpenDelete(null);
     setMenuOpen(null);
   };

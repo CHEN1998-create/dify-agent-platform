@@ -74,16 +74,24 @@ export default function ChatSessionPage() {
     }
   };
 
-  const handleDelete = () => {
-    deleteSession(session.id);
-    toast("已删除会话", { variant: "info" });
-    router.replace("/chat");
+  const handleDelete = async () => {
+    try {
+      await deleteSession(session.id);
+      toast("已删除会话", { variant: "info" });
+      router.replace("/chat");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "删除失败", { variant: "error" });
+    }
   };
 
-  const handleSaveTitle = () => {
+  const handleSaveTitle = async () => {
     if (titleDraft.trim() && titleDraft.trim() !== session.title) {
-      renameSession(session.id, titleDraft.trim());
-      toast("已重命名", { variant: "success" });
+      try {
+        await renameSession(session.id, titleDraft.trim());
+        toast("已重命名", { variant: "success" });
+      } catch (e) {
+        toast(e instanceof Error ? e.message : "重命名失败", { variant: "error" });
+      }
     }
     setEditingTitle(false);
   };

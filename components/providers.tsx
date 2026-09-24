@@ -17,14 +17,14 @@ function ChatWithLogsBridge({ children }: { children: React.ReactNode }) {
   const { createLog } = useRunLogs();
 
   const onRun = useCallback(
-    (
+    async (
       agentId: string,
       sessionId: string,
       model: string,
       agentName: string,
       result: OnRunResult
     ) => {
-      createLog(agentId, sessionId, model, agentName, {
+      await createLog(agentId, sessionId, model, agentName, {
         status: result.status,
         latencyMs: result.latencyMs,
         promptTokens: result.promptTokens,
