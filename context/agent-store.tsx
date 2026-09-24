@@ -14,6 +14,8 @@ import {
   type Agent,
   type AgentStatus,
 } from "@/lib/mock";
+import { DEFAULT_MODEL } from "@/lib/models";
+import { useAuth } from "@/context/auth-context";
 
 export interface AgentCreateInput {
   name: string;
@@ -39,13 +41,16 @@ interface AgentStoreValue {
   publishAgent: (id: string) => Agent | undefined;
 }
 
-const STORAGE_KEY = "agent-studio:agents:v1";
 const AgentStoreContext = createContext<AgentStoreValue | undefined>(undefined);
 
-function loadFromStorage(): Agent[] | null {
+function storageKey(userId: string | null) {
+  return `agent-studio:agents:${userId ?? "anon"}:v1`;
+}
+
+function loadFromStorage(key: string): Agent[] | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed as Agent[];
@@ -55,10 +60,10 @@ function loadFromStorage(): Agent[] | null {
   }
 }
 
-function saveToStorage(agents: Agent[]) {
+function saveToStorage(key: string, agents: Agent[]) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(agents));
+    window.localStorage.setItem(key, JSON.stringify(agents));
   } catch {
     /* ignore quota errors */
   }
@@ -69,14 +74,24 @@ function uid() {
 }
 
 export function AgentProvider({ children }: { children: ReactNode }) {
-  const [agents, setAgents] = useState<Agent[]>(() => {
-    return loadFromStorage() ?? seedAgents;
-  });
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
 
-  // 持久化到 localStorage
+  // 首次渲染不依赖 localStorage（userId 可能还没恢复），保持 seed 让界面不空白
+  const [agents, setAgents] = useState<Agent[]>(seedAgents);
+
+  // userId 变化 → 切换到对应用户的 localStorage key
   useEffect(() => {
-    saveToStorage(agents);
-  }, [agents]);
+    const key = storageKey(userId);
+    const saved = loadFromStorage(key);
+    setAgents(saved ?? seedAgents);
+  }, [userId]);
+
+  // 数据变化 → 持久化（未登录时跳过）
+  useEffect(() => {
+    if (!userId) return;
+    saveToStorage(storageKey(userId), agents);
+  }, [agents, userId]);
 
   const getAgent = useCallback(
     (id: string) => agents.find((a) => a.id === id),
@@ -90,7 +105,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       name: input.name.trim(),
       description: input.description.trim() || "还没有描述",
       systemPrompt: "你是一个有帮助的 AI 助手。",
-      model: "deepseek-flash",
+      model: DEFAULT_MODEL,
       temperature: 0.7,
       maxTokens: 2048,
       status: "draft",
@@ -112,7 +127,6 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           return updated;
         })
       );
-      // setAgents 是异步的，但 React 会立即同步执行 setState 内的 map
       return updated;
     },
     []

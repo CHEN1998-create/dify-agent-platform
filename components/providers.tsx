@@ -38,15 +38,16 @@ function ChatWithLogsBridge({ children }: { children: React.ReactNode }) {
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
+  // ToastProvider 放最顶层，这样内部所有 store / 组件都能 useToast()
   return (
-    <AuthProvider>
-      <AgentProvider>
-        <RunLogsProvider>
-          <ChatWithLogsBridge>
-            <ToastProvider>{children}</ToastProvider>
-          </ChatWithLogsBridge>
-        </RunLogsProvider>
-      </AgentProvider>
-    </AuthProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <AgentProvider>
+          <RunLogsProvider>
+            <ChatWithLogsBridge>{children}</ChatWithLogsBridge>
+          </RunLogsProvider>
+        </AgentProvider>
+      </AuthProvider>
+    </ToastProvider>
   );
 }

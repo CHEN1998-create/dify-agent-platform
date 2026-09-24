@@ -9,7 +9,7 @@ import {
   useState,
   ReactNode,
 } from "react";
-import { runLogs as seedLogs } from "@/lib/mock";
+import { useAuth } from "@/context/auth-context";
 
 export interface RunLog {
   id: string;
@@ -33,31 +33,46 @@ interface RunLogsStoreValue {
   clearLogs: () => void;
 }
 
-const KEY = "agent-studio:run-logs:v1";
 const Ctx = createContext<RunLogsStoreValue | undefined>(undefined);
+
+function storageKey(userId: string | null) {
+  return `agent-studio:run-logs:${userId ?? "anon"}:v1`;
+}
 
 function uid(p = "log") {
   return `${p}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function load(): RunLog[] {
-  if (typeof window === "undefined") return seedLogs as RunLog[];
+function load(key: string): RunLog[] {
+  if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(KEY);
+    const raw = window.localStorage.getItem(key);
     if (raw) return JSON.parse(raw);
   } catch { /* noop */ }
-  return seedLogs as RunLog[];
+  return [];
 }
 
-function save(data: RunLog[]) {
+function save(key: string, data: RunLog[]) {
   if (typeof window === "undefined") return;
-  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch { /* quota */ }
+  try { window.localStorage.setItem(key, JSON.stringify(data)); } catch { /* quota */ }
 }
 
 export function RunLogsProvider({ children }: { children: ReactNode }) {
-  const [logs, setLogs] = useState<RunLog[]>(() => load());
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
 
-  useEffect(() => save(logs), [logs]);
+  const [logs, setLogs] = useState<RunLog[]>([]);
+
+  // userId 变化 → 加载对应用户的日志
+  useEffect(() => {
+    setLogs(load(storageKey(userId)));
+  }, [userId]);
+
+  // 持久化（未登录时跳过）
+  useEffect(() => {
+    if (!userId) return;
+    save(storageKey(userId), logs);
+  }, [logs, userId]);
 
   const createLog = useCallback<RunLogsStoreValue["createLog"]>(
     (agentId, sessionId, model, agentName, opts = {}) => {

@@ -14,15 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
 import { useAgentStore } from "@/context/agent-store";
+import { activeModels } from "@/lib/models";
 import type { AgentStatus } from "@/lib/mock";
-
-// Deepseek 官方最新模型名（2026年9月更新）
-// endpoint: https://api.deepseek.com/v1
-// 旧的 deepseek-chat / deepseek-reasoner 已下线
-const models = [
-  { value: "deepseek-flash", label: "deepseek-flash（推荐·便宜快）" },
-  { value: "deepseek-v4-pro", label: "deepseek-v4-pro（旗舰·更强）" },
-];
 
 export default function AgentConfigPage() {
   const params = useParams<{ id: string }>();
@@ -215,7 +208,7 @@ export default function AgentConfigPage() {
                     <Select
                       value={model}
                       onChange={(e) => setModel(e.target.value)}
-                      options={models}
+                      options={activeModels}
                     />
                   </div>
                   <div className="space-y-2">

@@ -10,6 +10,9 @@ import {
   ReactNode,
 } from "react";
 import { useAgentStore } from "@/context/agent-store";
+import { useToast } from "@/components/ui/toast";
+import { DEFAULT_MODEL } from "@/lib/models";
+import { useAuth } from "@/context/auth-context";
 
 export interface ChatSession {
   id: string;
@@ -53,9 +56,14 @@ interface ChatStoreValue {
   sendingSessionId: string | null;
 }
 
-const SESSIONS_KEY = "agent-studio:chat-sessions:v1";
-const MESSAGES_KEY = "agent-studio:chat-messages:v1";
 const ChatStoreContext = createContext<ChatStoreValue | undefined>(undefined);
+
+function sessionsKey(userId: string | null) {
+  return `agent-studio:chat-sessions:${userId ?? "anon"}:v1`;
+}
+function messagesKey(userId: string | null) {
+  return `agent-studio:chat-messages:${userId ?? "anon"}:v1`;
+}
 
 function uid(prefix = "id") {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
@@ -110,17 +118,29 @@ interface ChatProviderProps {
 export function ChatProvider({ children, onRun }: ChatProviderProps) {
   // 从 agent-store 拿 agent 配置（systemPrompt/model/temperature/maxTokens）
   const { getAgent } = useAgentStore();
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
 
-  const [sessions, setSessions] = useState<ChatSession[]>(() =>
-    load<ChatSession[]>(SESSIONS_KEY) ?? []
-  );
-  const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    load<ChatMessage[]>(MESSAGES_KEY) ?? []
-  );
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sendingSessionId, setSendingSessionId] = useState<string | null>(null);
 
-  useEffect(() => save(SESSIONS_KEY, sessions), [sessions]);
-  useEffect(() => save(MESSAGES_KEY, messages), [messages]);
+  // userId 变化 → 加载对应用户的数据
+  useEffect(() => {
+    setSessions(load<ChatSession[]>(sessionsKey(userId)) ?? []);
+    setMessages(load<ChatMessage[]>(messagesKey(userId)) ?? []);
+  }, [userId]);
+
+  // 持久化（未登录时跳过）
+  useEffect(() => {
+    if (!userId) return;
+    save(sessionsKey(userId), sessions);
+  }, [sessions, userId]);
+  useEffect(() => {
+    if (!userId) return;
+    save(messagesKey(userId), messages);
+  }, [messages, userId]);
 
   const createSession = useCallback(
     (agentId: string, title?: string): ChatSession => {
@@ -251,11 +271,18 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages: apiMessages,
-            model: agent?.model ?? "deepseek-flash",
+            model: agent?.model ?? DEFAULT_MODEL,
             temperature: agent?.temperature ?? 0.7,
             maxTokens: agent?.maxTokens ?? 2048,
           }),
         });
+
+        if (resp.status === 401) {
+          // 鉴权失败 —— toast 提示，不插入 AI 回复，不写日志
+          toast("请先登录", { description: "登录后才能使用 AI 对话", variant: "error" });
+          setSendingSessionId(null);
+          throw new Error("AUTH_REQUIRED");
+        }
 
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
@@ -271,6 +298,10 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
           errorMessage: data.errorMessage,
         };
       } catch (err: unknown) {
+        // 401 已经 toast 并 early return 过了，这里 skip
+        if (err instanceof Error && err.message === "AUTH_REQUIRED") {
+          throw err; // 重新抛出，让调用方知道发送失败
+        }
         const msg = err instanceof Error ? err.message : String(err);
         llmResult = {
           status: "error",
