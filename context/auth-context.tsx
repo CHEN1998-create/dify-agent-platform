@@ -4,12 +4,12 @@ import { createContext, useContext, useEffect, useState, ReactNode } from "react
 import {
   AuthUser,
   getCurrentUser,
-  loginUser as loginUserFn,
-  registerUser as registerUserFn,
+  loginUser,
+  registerUser,
   logout as logoutFn,
-  seedAdminIfNeeded,
   UserRole,
 } from "@/lib/auth";
+import { createClient } from "@/lib/supabase/client";
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -21,7 +21,7 @@ interface AuthContextValue {
     name: string,
     role?: UserRole
   ) => Promise<AuthUser>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -30,15 +30,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 初始化：从 localStorage 恢复登录态，并预置管理员
   useEffect(() => {
-    seedAdminIfNeeded();
-    setUser(getCurrentUser());
-    setLoading(false);
+    // 初始化：从 Supabase 会话恢复
+    getCurrentUser().then((u) => {
+      setUser(u);
+      setLoading(false);
+    });
+
+    // 监听登录态变化
+    const supabase = createClient();
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        const metadata = session.user.user_metadata || {};
+        setUser({
+          id: session.user.id,
+          email: session.user.email ?? "",
+          name: metadata.name || session.user.email?.split("@")[0] || "用户",
+          role: (metadata.role as UserRole) || "user",
+          createdAt: session.user.created_at || new Date().toISOString(),
+        });
+      } else {
+        setUser(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const login = async (email: string, password: string) => {
-    const u = await loginUserFn(email, password);
+    const u = await loginUser(email, password);
     setUser(u);
     return u;
   };
@@ -49,13 +71,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     name: string,
     role: UserRole = "user"
   ) => {
-    const u = await registerUserFn(email, password, name, role);
+    const u = await registerUser(email, password, name, role);
     setUser(u);
     return u;
   };
 
-  const logout = () => {
-    logoutFn();
+  const logout = async () => {
+    await logoutFn();
     setUser(null);
   };
 

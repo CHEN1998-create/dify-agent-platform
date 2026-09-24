@@ -6,7 +6,7 @@ import { Bot, Github, Chrome, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/auth-context";
-import { DEMO_ADMIN, UserRole } from "@/lib/auth";
+import { UserRole } from "@/lib/auth";
 
 type Mode = "login" | "register";
 
@@ -87,8 +87,8 @@ export default function LoginPage() {
           </p>
         </div>
         <div className="space-y-2 text-sm text-primary-foreground/70">
-          <p className="font-medium text-primary-foreground">演示账号</p>
-          <p>管理员：{DEMO_ADMIN.email} / {DEMO_ADMIN.password}</p>
+          <p className="font-medium text-primary-foreground">演示说明</p>
+          <p>注册时选择「管理员」角色即可体验后台</p>
         </div>
       </div>
 
@@ -224,7 +224,7 @@ export default function LoginPage() {
 
           {mode === "login" && (
             <p className="text-center text-sm text-muted-foreground lg:hidden">
-              演示管理员：{DEMO_ADMIN.email} / {DEMO_ADMIN.password}
+              注册时选择「管理员」角色即可体验后台
             </p>
           )}
         </div>
