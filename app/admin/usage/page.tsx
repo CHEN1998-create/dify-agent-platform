@@ -33,7 +33,10 @@ export default function AdminUsagePage() {
         .filter((u) => u.userId !== null)
         .slice(0, 5)
         .map((u) => ({
-          name: u.userId!.slice(0, 10),
+          name:
+            u.displayName ??
+            u.email ??
+            u.userId!.slice(0, 10),
           tokens: Math.round(u.totalTokens / 1000),
         })),
     [stats.userStats]
@@ -42,7 +45,11 @@ export default function AdminUsagePage() {
   const filteredUsers = useMemo(() => {
     const q = search.trim().toLowerCase();
     return stats.userStats.filter((u) =>
-      q ? (u.userId ?? "匿名").toLowerCase().includes(q) : true
+      q
+        ? `${u.displayName ?? ""} ${u.email ?? ""} ${u.userId ?? "匿名"}`
+            .toLowerCase()
+            .includes(q)
+        : true
     );
   }, [stats.userStats, search]);
 
@@ -62,7 +69,7 @@ export default function AdminUsagePage() {
         <div className="mb-6">
           <h2 className="text-2xl font-bold">用户与使用情况</h2>
           <p className="text-sm text-muted-foreground">
-            查看本浏览器已登录账号的聚合数据（接数据库后升级为全平台统计）
+            基于 Supabase 数据库的全平台用户与调用统计
           </p>
         </div>
 
@@ -70,10 +77,10 @@ export default function AdminUsagePage() {
         <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
           <Card>
             <CardContent className="p-5">
-              <p className="text-sm text-muted-foreground">当前可见用户</p>
+              <p className="text-sm text-muted-foreground">平台用户数</p>
               <p className="text-2xl font-bold">{stats.trackedUsers}</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                本浏览器 localStorage 内登录过的账号
+                产生过数据的用户数
               </p>
             </CardContent>
           </Card>
@@ -186,7 +193,7 @@ export default function AdminUsagePage() {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="搜索用户 ID..."
+                placeholder="搜索昵称 / 邮箱 / ID..."
                 className="w-56 pl-9"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -217,11 +224,22 @@ export default function AdminUsagePage() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
-                            {(u.userId ?? "A")[0].toUpperCase()}
+                            {(u.displayName ?? u.email ?? u.userId ?? "A")[0].toUpperCase()}
                           </div>
-                          <span className="font-medium max-w-[200px] truncate">
-                            {u.userId ?? "匿名（未登录状态）"}
-                          </span>
+                          <div className="min-w-0">
+                            <p className="font-medium truncate max-w-[200px]">
+                              {u.displayName ?? u.email ?? u.userId ?? "匿名（未登录状态）"}
+                            </p>
+                            {u.email ? (
+                              <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                                {u.email}
+                              </p>
+                            ) : u.userId ? (
+                              <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                                {u.userId.slice(0, 16)}
+                              </p>
+                            ) : null}
+                          </div>
                         </div>
                       </td>
                       <td className="px-4 py-3 tabular-nums">{u.totalAgents}</td>

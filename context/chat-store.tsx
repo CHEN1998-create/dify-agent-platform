@@ -227,10 +227,26 @@ function retrieveKnowledge(query: string, chunks: KbChunk[], topN = 3): KbRetrie
     return { keywords, hits: [], totalChunks: chunks.length };
   }
 
+  // IDF 加权：先统计每个关键词出现在多少个片段里（文档频率 df）。
+  // 像"音箱"这种几乎每个片段都有的通用词权重低（1/df），
+  // "保修""固件"这类只集中在个别片段的词权重高 —— 减少通用词带来的噪音命中
+  const df = new Map<string, number>();
+  for (const kw of keywords) {
+    let n = 0;
+    for (const c of chunks) {
+      if (c.chunk.toLowerCase().includes(kw)) n++;
+    }
+    df.set(kw, n);
+  }
+
   const scored = chunks
     .map((c) => {
-      const hits = keywords.filter((kw) => c.chunk.toLowerCase().includes(kw)).length;
-      return { docName: c.docName, chunkIndex: c.chunkIndex, snippet: c.chunk, hits };
+      const lower = c.chunk.toLowerCase();
+      let score = 0;
+      for (const kw of keywords) {
+        if (lower.includes(kw)) score += 1 / (df.get(kw) ?? 1);
+      }
+      return { docName: c.docName, chunkIndex: c.chunkIndex, snippet: c.chunk, hits: score };
     })
     .filter((c) => c.hits > 0)
     .sort((a, b) => b.hits - a.hits)

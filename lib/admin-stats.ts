@@ -32,6 +32,10 @@ export interface AdminStats {
 
 export interface UserStat {
   userId: string | null;
+  /** user_profiles 表中的昵称（无则回退邮箱前缀） */
+  displayName: string | null;
+  /** user_profiles 表中的邮箱（anon key 读不了 auth.users，靠 profiles 冗余） */
+  email: string | null;
   totalAgents: number;
   totalRuns: number;
   totalTokens: number;
@@ -87,8 +91,9 @@ export async function aggregateAdminStats(): Promise<AdminStats> {
   const stats = emptyStats();
   const supabase = createClient();
 
-  // 并行查 4 张表（只 select 聚合需要的字段）
-  const [agentsRes, logsRes, sessRes, docsRes] = await Promise.all([
+  // 并行查 5 张表（只 select 聚合需要的字段）
+  // user_profiles 表用于把 user_id 映射回邮箱/昵称（anon key 读不了 auth.users）
+  const [agentsRes, logsRes, sessRes, docsRes, profilesRes] = await Promise.all([
     supabase.from("agents").select("id, user_id"),
     supabase
       .from("run_logs")
@@ -98,7 +103,20 @@ export async function aggregateAdminStats(): Promise<AdminStats> {
       .limit(2000),
     supabase.from("chat_sessions").select("id, user_id"),
     supabase.from("knowledge_documents").select("id, user_id"),
+    supabase.from("user_profiles").select("user_id, email, name"),
   ]);
+
+  // user_id → { email, name }（user_profiles 表未建或查询失败时为空，页面回退显示 user_id）
+  const profileMap = new Map<string, { email: string | null; name: string | null }>();
+  if (!profilesRes.error && profilesRes.data) {
+    for (const p of profilesRes.data as {
+      user_id: string;
+      email: string | null;
+      name: string | null;
+    }[]) {
+      profileMap.set(p.user_id, { email: p.email, name: p.name });
+    }
+  }
 
   const seenUsers = new Set<string | null>();
   const userMap = new Map<string | null, UserStat>();
@@ -106,8 +124,11 @@ export async function aggregateAdminStats(): Promise<AdminStats> {
   const ensureUser = (uid: string | null) => {
     seenUsers.add(uid);
     if (!userMap.has(uid)) {
+      const profile = uid ? profileMap.get(uid) : undefined;
       userMap.set(uid, {
         userId: uid,
+        displayName: profile?.name ?? profile?.email?.split("@")[0] ?? null,
+        email: profile?.email ?? null,
         totalAgents: 0,
         totalRuns: 0,
         totalTokens: 0,

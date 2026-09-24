@@ -71,7 +71,7 @@ export default function AdminHomePage() {
         <div className="mb-6">
           <h2 className="text-2xl font-bold">欢迎回来，管理员</h2>
           <p className="text-sm text-muted-foreground">
-            基于本浏览器已登录账号的聚合数据（接数据库后升级为全平台统计）
+            基于 Supabase 数据库的全平台聚合统计（每 15 秒自动刷新）
           </p>
         </div>
 
