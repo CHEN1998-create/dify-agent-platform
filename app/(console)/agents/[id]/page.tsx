@@ -16,13 +16,12 @@ import { useToast } from "@/components/ui/toast";
 import { useAgentStore } from "@/context/agent-store";
 import type { AgentStatus } from "@/lib/mock";
 
-// 模型名 = Deepseek 官方命名（不带厂商前缀）
-// endpoint 默认 https://api.deepseek.com/v1
-// 官方模型文档: https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+// Deepseek 官方最新模型名（2026年9月更新）
+// endpoint: https://api.deepseek.com/v1
+// 旧的 deepseek-chat / deepseek-reasoner 已下线
 const models = [
-  { value: "deepseek-chat", label: "deepseek-chat（通用·推荐）" },
-  { value: "deepseek-flash", label: "deepseek-flash（更便宜更快）" },
-  { value: "deepseek-reasoner", label: "deepseek-reasoner（推理/数学/代码）" },
+  { value: "deepseek-flash", label: "deepseek-flash（推荐·便宜快）" },
+  { value: "deepseek-v4-pro", label: "deepseek-v4-pro（旗舰·更强）" },
 ];
 
 export default function AgentConfigPage() {
