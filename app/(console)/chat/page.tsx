@@ -1,66 +1,105 @@
 "use client";
 
-import { useState } from "react";
-import { Send } from "lucide-react";
+import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ConsoleTopbar } from "@/components/console/topbar";
 import { ChatSidebar } from "@/components/console/chat-sidebar";
-import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { chatMessages } from "@/lib/mock";
-import { cn } from "@/lib/utils";
+import { Bot, ArrowRight } from "lucide-react";
+import { useAgentStore } from "@/context/agent-store";
+import { useChatStore } from "@/context/chat-store";
+import { useToast } from "@/components/ui/toast";
 
-export default function ChatPage() {
-  const [input, setInput] = useState("");
+export default function ChatHomePage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialAgentId = searchParams.get("agentId") ?? undefined;
+
+  const { agents } = useAgentStore();
+  const { createSession } = useChatStore();
+  const { toast } = useToast();
+
+  const defaultAgent =
+    (initialAgentId && agents.find((a) => a.id === initialAgentId)) ||
+    agents.find((a) => a.status === "published") ||
+    agents[0];
+
+  const handleStart = (agentId: string) => {
+    const session = createSession(agentId);
+    router.push(`/chat/${session.id}`);
+  };
+
+  if (agents.length === 0) {
+    return (
+      <>
+        <ConsoleTopbar title="对话" />
+        <div className="flex flex-1 overflow-hidden">
+          <ChatSidebar />
+          <div className="flex flex-1 flex-col items-center justify-center p-12">
+            <p className="text-lg font-medium">还没有智能体</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              先去创建一个智能体，然后开始对话吧。
+            </p>
+            <Button className="mt-4" onClick={() => router.replace("/agents")}>
+              去创建智能体
+            </Button>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
       <ConsoleTopbar title="对话" />
       <div className="flex flex-1 overflow-hidden">
-        <ChatSidebar />
+        <ChatSidebar selectedAgentId={defaultAgent?.id} />
         <div className="flex flex-1 flex-col">
-          {/* Messages */}
-          <div className="flex-1 space-y-4 overflow-y-auto p-6">
-            <div className="mx-auto max-w-3xl space-y-4">
-              {chatMessages.map((m) => (
-                <div
-                  key={m.id}
-                  className={cn(
-                    "flex",
-                    m.role === "user" ? "justify-end" : "justify-start"
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
-                      m.role === "user"
-                        ? "rounded-tr-sm bg-primary text-primary-foreground"
-                        : "rounded-tl-sm bg-muted"
-                    )}
-                  >
-                    {m.content}
-                  </div>
-                </div>
-              ))}
+          <div className="flex flex-1 flex-col items-center justify-center p-12">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <Bot className="h-8 w-8" />
             </div>
-          </div>
-
-          {/* Input */}
-          <div className="border-t bg-card p-4">
-            <div className="mx-auto flex max-w-3xl items-end gap-2">
-              <Textarea
-                rows={1}
-                placeholder="输入消息，Enter 发送，Shift+Enter 换行..."
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                className="min-h-[44px] flex-1 resize-none"
-              />
-              <Button size="icon" className="h-11 w-11 shrink-0">
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
-            <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-muted-foreground">
-              当前使用「内容创作助手」· 模型 gpt-4o-mini
+            <h2 className="text-xl font-semibold">选择智能体开始对话</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              从左侧选择智能体，或直接点下方开始
             </p>
+
+            {defaultAgent && (
+              <div className="mt-6 flex min-w-[320px] max-w-lg items-center justify-between rounded-xl border bg-card p-4 shadow-sm">
+                <div>
+                  <p className="font-medium">{defaultAgent.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {defaultAgent.model} · {defaultAgent.status === "published" ? "已发布" : "草稿"}
+                  </p>
+                </div>
+                <Button
+                  onClick={() => handleStart(defaultAgent.id)}
+                  disabled={defaultAgent.status === "paused"}
+                  className="gap-2"
+                >
+                  开始对话
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+
+            {agents.length > 1 && (
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                {agents
+                  .filter((a) => a.id !== defaultAgent?.id)
+                  .map((a) => (
+                    <Button
+                      key={a.id}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleStart(a.id)}
+                      disabled={a.status === "paused"}
+                    >
+                      {a.name}
+                    </Button>
+                  ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
