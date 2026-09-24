@@ -16,21 +16,13 @@ import { useToast } from "@/components/ui/toast";
 import { useAgentStore } from "@/context/agent-store";
 import type { AgentStatus } from "@/lib/mock";
 
-// 模型名 = 硅基流动的"厂商/模型名"格式
-// endpoint 默认是 https://api.siliconflow.cn/v1
-// 完整模型列表见 https://cloud.siliconflow.cn/models
+// 模型名 = Deepseek 官方命名（不带厂商前缀）
+// endpoint 默认 https://api.deepseek.com/v1
+// 官方模型文档: https://api-docs.deepseek.com/zh-cn/quick_start/pricing
 const models = [
-  // DeepSeek 系列（通用首选）
-  { value: "deepseek-ai/DeepSeek-V3", label: "DeepSeek-V3（通用强）" },
-  { value: "deepseek-ai/DeepSeek-V4-Flash", label: "DeepSeek-V4-Flash（便宜快）" },
-  { value: "deepseek-ai/DeepSeek-R1", label: "DeepSeek-R1（推理/数学）" },
-  // Qwen 系列
-  { value: "Qwen/Qwen2.5-32B-Instruct", label: "Qwen2.5-32B（阿里旗舰）" },
-  { value: "Qwen/Qwen2.5-7B-Instruct", label: "Qwen2.5-7B（轻量便宜）" },
-  // GLM 系列
-  { value: "THUDM/GLM-4-32B-0414", label: "GLM-4-32B（智谱）" },
-  // Kimi
-  { value: "moonshotai/Kimi-K2.5", label: "Kimi-K2.5（长上下文）" },
+  { value: "deepseek-chat", label: "deepseek-chat（通用·推荐）" },
+  { value: "deepseek-flash", label: "deepseek-flash（更便宜更快）" },
+  { value: "deepseek-reasoner", label: "deepseek-reasoner（推理/数学/代码）" },
 ];
 
 export default function AgentConfigPage() {
