@@ -251,7 +251,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages: apiMessages,
-            model: agent?.model ?? "deepseek-chat",
+            model: agent?.model ?? "deepseek-flash",
             temperature: agent?.temperature ?? 0.7,
             maxTokens: agent?.maxTokens ?? 2048,
           }),

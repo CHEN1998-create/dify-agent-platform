@@ -15,13 +15,14 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs"; // Route Handler 默认就是 nodejs，显式声明
 
 const API_KEY = process.env.LLM_API_KEY;
 // 默认走 Deepseek 官方（注册送 ¥5 额度，国内直连）
 // endpoint: https://api.deepseek.com/v1
-// 模型名不带厂商前缀：deepseek-chat / deepseek-flash / deepseek-reasoner
+// 模型名不带厂商前缀：deepseek-flash / deepseek-v4-pro
 // 切换 provider 时改 LLM_BASE_URL + 模型名：
 //   硅基流动: https://api.siliconflow.cn/v1  + 厂商/模型名
 //   Deepseek: https://api.deepseek.com/v1   + deepseek-xxx
@@ -40,6 +41,25 @@ interface RequestBody {
 }
 
 export async function POST(req: NextRequest) {
+  // 0. 鉴权：未登录用户禁止消耗 API Key
+  try {
+    const supabase = createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: "请先登录后再使用 AI 对话" },
+        { status: 401 }
+      );
+    }
+  } catch {
+    return NextResponse.json(
+      { error: "鉴权失败，请重新登录" },
+      { status: 401 }
+    );
+  }
+
   // 1. 环境变量检查
   if (!API_KEY) {
     return NextResponse.json(
