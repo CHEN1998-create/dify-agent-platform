@@ -104,7 +104,13 @@ function mockReply(agentName: string, userMessage: string): string {
   return `收到！关于「${userMessage.slice(0, 30)}${userMessage.length > 30 ? "..." : ""}」，我的理解是你想得到一些帮助。\n\n当前是 mock 模式，接入真实 LLM 后我会给出更精准的回复。你可以继续追问，或者切换其他智能体试试。`;
 }
 
-export function ChatProvider({ children }: { children: ReactNode }) {
+interface ChatProviderProps {
+  children: ReactNode;
+  /** 每次 mock LLM 调用完成后回调（用于写入 run_logs） */
+  onRun?: (agentId: string, sessionId: string, model: string, agentName: string, content: string) => void;
+}
+
+export function ChatProvider({ children, onRun }: ChatProviderProps) {
   const [sessions, setSessions] = useState<ChatSession[]>(() =>
     load<ChatSession[]>(SESSIONS_KEY) ?? []
   );
@@ -214,9 +220,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       };
       setMessages((prev) => [...prev, reply]);
 
+      // 回调：让上层写入 run_logs（如果提供了 onRun）
+      const agent = seedAgents.find((a) => a.id === session?.agentId);
+      if (onRun && agent) {
+        try {
+          onRun(
+            agent.id,
+            sessionId,
+            agent.model,
+            agentName,
+            trimmed
+          );
+        } catch { /* 日志写入失败不影响对话 */ }
+      }
+
       return { userMsg, reply };
     },
-    [messages, sessions]
+    [messages, sessions, onRun]
   );
 
   const value = useMemo<ChatStoreValue>(
