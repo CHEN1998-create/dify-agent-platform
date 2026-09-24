@@ -326,7 +326,7 @@ export default function ChatSessionPage() {
             <p className="mx-auto mt-2 flex max-w-3xl items-center justify-center gap-1 text-center text-xs text-muted-foreground">
               {agent?.name} · {agent?.model}
               <ArrowRight className="h-3 w-3" />
-              Mock 模式 · 接入真实 LLM 后提供精准回复
+              已接入真实 LLM · 每次调用自动记录到日志页
             </p>
           </div>
         </div>
