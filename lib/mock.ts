@@ -11,6 +11,8 @@ export interface Agent {
   temperature: number;
   maxTokens: number;
   status: AgentStatus;
+  /** 知识库开关：开启后对话前先检索知识片段注入 Prompt */
+  knowledgeEnabled?: boolean;
   createdAt: string;
   lastActive: string;
   runs: number;

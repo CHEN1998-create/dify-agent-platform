@@ -2,16 +2,70 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Send, MoreVertical, Pencil, Trash2, Loader2, ArrowRight } from "lucide-react";
+import { Send, MoreVertical, Pencil, Trash2, Loader2, ArrowRight, BookOpen, ChevronDown } from "lucide-react";
 import Link from "next/link";
 import { ConsoleTopbar } from "@/components/console/topbar";
 import { ChatSidebar } from "@/components/console/chat-sidebar";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useChatStore } from "@/context/chat-store";
+import { useChatStore, type KbInfo } from "@/context/chat-store";
 import { useAgentStore } from "@/context/agent-store";
 import { useToast } from "@/components/ui/toast";
+
+/** 知识库检索结果面板：默认收起只看摘要，展开可见完整调用链路和命中片段 */
+function KbPanel({ info }: { info: KbInfo }) {
+  const [open, setOpen] = useState(false);
+  const docNames = Array.from(new Set(info.hits.map((h) => h.docName)));
+
+  return (
+    <div className="rounded-lg border border-dashed bg-card text-xs">
+      <button
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <BookOpen className="h-3.5 w-3.5 shrink-0" />
+        <span className="flex-1 truncate">
+          {info.hitCount > 0
+            ? `已检索知识库：命中 ${info.hitCount} 个片段（${docNames.join("、")}）`
+            : info.totalChunks === 0
+            ? "已检索知识库：知识库为空，请先上传文档"
+            : `已检索知识库：未命中片段（关键词：${info.keywords.slice(0, 5).join("、") || "无"}）`}
+        </span>
+        <ChevronDown
+          className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-180")}
+        />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t px-2.5 py-2">
+          <p className="leading-relaxed text-muted-foreground">
+            调用链路：用户消息 → 提取关键词
+            {info.keywords.length > 0 ? ` [${info.keywords.slice(0, 8).join("、")}]` : "（无有效关键词）"}
+            → 关键词匹配知识库片段（共 {info.totalChunks} 条）→ 命中 {info.hitCount} 条注入 System Prompt → 调用模型
+          </p>
+          {info.hits.length === 0 ? (
+            <p className="text-muted-foreground">
+              {info.totalChunks === 0
+                ? "知识库中没有可检索的片段，请先到「知识库」页上传文档。"
+                : `本次在 ${info.totalChunks} 个片段中未匹配到关键词，模型仅按 System Prompt 回答。`}
+            </p>
+          ) : (
+            info.hits.map((h, i) => (
+              <div key={i} className="rounded-md bg-muted/60 px-2.5 py-2">
+                <p className="font-medium text-foreground">
+                  [{i + 1}] {h.docName} · 片段#{h.chunkIndex + 1}
+                </p>
+                <p className="mt-1 line-clamp-4 whitespace-pre-wrap text-muted-foreground">
+                  {h.snippet}
+                </p>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ChatSessionPage() {
   const params = useParams<{ id: string }>();
@@ -182,6 +236,11 @@ export default function ChatSessionPage() {
                 <p className="mt-1 text-sm text-muted-foreground">
                   当前智能体：{agent?.name} · {agent?.model}
                 </p>
+                {agent?.knowledgeEnabled && (
+                  <p className="mt-1 text-xs text-emerald-600">
+                    📚 知识库增强已开启：回复前会先检索知识库片段
+                  </p>
+                )}
                 {agent && agent.status !== "published" && (
                   <p className="mt-2 text-xs text-amber-600">
                     ⚠️ 该智能体尚未发布，回复可能不准确。建议先去配置页发布。
@@ -204,13 +263,21 @@ export default function ChatSessionPage() {
                 >
                   <div
                     className={cn(
-                      "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
-                      m.role === "user"
-                        ? "rounded-tr-sm bg-primary text-primary-foreground"
-                        : "rounded-tl-sm bg-muted"
+                      "max-w-[80%]",
+                      m.role !== "user" && m.kbInfo && "flex w-full flex-col items-start gap-1"
                     )}
                   >
-                    {m.content}
+                    <div
+                      className={cn(
+                        "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+                        m.role === "user"
+                          ? "rounded-tr-sm bg-primary text-primary-foreground"
+                          : "rounded-tl-sm bg-muted"
+                      )}
+                    >
+                      {m.content}
+                    </div>
+                    {m.role !== "user" && m.kbInfo && <KbPanel info={m.kbInfo} />}
                   </div>
                 </div>
               ))}

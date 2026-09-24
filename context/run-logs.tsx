@@ -24,6 +24,10 @@ export interface RunLog {
   completionTokens: number;
   createdAt: string;
   errorMessage?: string;
+  /** 知识库命中片段数（未开启知识库时为 null） */
+  kbHitCount?: number | null;
+  /** 命中的文档名（顿号分隔） */
+  kbDocNames?: string | null;
 }
 
 interface RunLogsStoreValue {
@@ -40,6 +44,8 @@ interface RunLogsStoreValue {
       errorMessage?: string;
       promptTokens?: number;
       completionTokens?: number;
+      kbHitCount?: number;
+      kbDocNames?: string;
     }
   ) => Promise<RunLog>;
   getLog: (id: string) => RunLog | undefined;
@@ -67,6 +73,8 @@ function rowToLog(row: Record<string, unknown>): RunLog {
     completionTokens: Number(row.completion_tokens ?? 0),
     createdAt: (row.created_at as string) ?? new Date().toISOString(),
     errorMessage: (row.error_message as string) || undefined,
+    kbHitCount: (row.kb_hit_count as number | null) ?? null,
+    kbDocNames: (row.kb_doc_names as string | null) ?? null,
   };
 }
 
@@ -133,6 +141,8 @@ export function RunLogsProvider({ children }: { children: ReactNode }) {
         prompt_tokens: opts.promptTokens ?? 0,
         completion_tokens: opts.completionTokens ?? 0,
         error_message: opts.errorMessage ?? null,
+        kb_hit_count: opts.kbHitCount ?? null,
+        kb_doc_names: opts.kbDocNames ?? null,
         created_at: now,
       };
 

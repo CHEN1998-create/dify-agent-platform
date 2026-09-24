@@ -13,7 +13,7 @@ import { useAgentStore } from "@/context/agent-store";
 import { useToast } from "@/components/ui/toast";
 import { DEFAULT_MODEL } from "@/lib/models";
 import { useAuth } from "@/context/auth-context";
-import { useKnowledgeStore } from "@/context/knowledge-store";
+import { useKnowledgeStore, type KbChunk } from "@/context/knowledge-store";
 import { createClient } from "@/lib/supabase/client";
 
 export interface ChatSession {
@@ -24,12 +24,33 @@ export interface ChatSession {
   updatedAt: string;
 }
 
+/** 单条知识库命中（可解释：来自哪个文档的第几个片段） */
+export interface KbHit {
+  docName: string;
+  chunkIndex: number;
+  snippet: string;
+}
+
+/** 一次对话的知识库检索信息（挂在 assistant 消息上，用于 UI 展示） */
+export interface KbInfo {
+  enabled: boolean;
+  /** 从用户消息提取的检索关键词 */
+  keywords: string[];
+  /** 命中片段数（可为 0，表示检索了但没命中） */
+  hitCount: number;
+  /** 本次参与检索的片段总数（0 = 知识库为空，用于诊断） */
+  totalChunks: number;
+  hits: KbHit[];
+}
+
 export interface ChatMessage {
   id: string;
   sessionId: string;
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  /** 知识库检索信息（仅 assistant 消息、且智能体开启知识库时存在） */
+  kbInfo?: KbInfo;
 }
 
 /** onRun 回调携带的真实 LLM 调用结果 */
@@ -39,6 +60,10 @@ export interface OnRunResult {
   promptTokens: number;
   completionTokens: number;
   errorMessage?: string;
+  /** 知识库命中片段数（未开启/未命中为 undefined 或 0） */
+  kbHitCount?: number;
+  /** 命中的文档名（顿号分隔，用于日志页展示） */
+  kbDocNames?: string;
 }
 
 interface ChatStoreValue {
@@ -93,12 +118,26 @@ function rowToSession(row: Record<string, unknown>): ChatSession {
 
 /** DB 行 → 前端 ChatMessage */
 function rowToMessage(row: Record<string, unknown>): ChatMessage {
+  // kb_meta 为 jsonb 列（未跑迁移 SQL 时为 undefined）
+  const kbMeta = row.kb_meta as
+    | { keywords?: string[]; hitCount?: number; totalChunks?: number; hits?: KbHit[] }
+    | null
+    | undefined;
   return {
     id: row.id as string,
     sessionId: (row.session_id as string) || "",
     role: (row.role as "user" | "assistant") || "user",
     content: (row.content as string) || "",
     createdAt: (row.created_at as string) ?? new Date().toISOString(),
+    kbInfo: kbMeta
+      ? {
+          enabled: true,
+          keywords: kbMeta.keywords ?? [],
+          hitCount: kbMeta.hitCount ?? 0,
+          totalChunks: kbMeta.totalChunks ?? 0,
+          hits: kbMeta.hits ?? [],
+        }
+      : undefined,
   };
 }
 
@@ -116,37 +155,100 @@ const STOPWORDS = new Set([
   "what", "how", "why", "where", "when", "who", "please", "help",
 ]);
 
-/** 从用户消息提取关键词（去停用词 + 2~20 字符） */
+/** 单字停用词（用于过滤中文 2-gram 中的虚词组合） */
+const SINGLE_CHAR_STOPWORDS = new Set(
+  Array.from(STOPWORDS).filter((w) => w.length === 1)
+);
+
+function hasCJK(s: string): boolean {
+  return /[\u4e00-\u9fff]/.test(s);
+}
+
+/**
+ * 从用户消息提取关键词。
+ * 英文按空格/标点切分；中文没有词边界，整句直接匹配永远命中不了，
+ * 所以对中文串滑窗切 2-gram（过滤含单字停用词/疑问词的组合）——MVP 无词典分词方案。
+ */
 function extractKeywords(text: string): string[] {
   const tokens = text
     .toLowerCase()
     .split(/[\s.,;:!?。，；：！？、…\-—_'"""''（）()【】\[\]《》<>/\\|=+*#@$%^&~`0-9]+/)
     .map((t) => t.trim())
-    .filter((t) => t.length >= 2 && t.length <= 20 && !STOPWORDS.has(t));
-  return Array.from(new Set(tokens));
+    .filter(Boolean);
+
+  const keywords: string[] = [];
+  for (const token of tokens) {
+    if (!hasCJK(token)) {
+      // 英文 token：保持原有长度过滤 + 停用词过滤
+      if (token.length >= 2 && token.length <= 20 && !STOPWORDS.has(token)) {
+        keywords.push(token);
+      }
+      continue;
+    }
+    if (token.length === 2) {
+      // 恰好两字的中文词直接作为关键词
+      if (
+        !STOPWORDS.has(token) &&
+        !SINGLE_CHAR_STOPWORDS.has(token[0]) &&
+        !SINGLE_CHAR_STOPWORDS.has(token[1])
+      ) {
+        keywords.push(token);
+      }
+      continue;
+    }
+    // 更长的中文串：滑窗切 2-gram
+    for (let i = 0; i < token.length - 1; i++) {
+      const gram = token.slice(i, i + 2);
+      if (STOPWORDS.has(gram)) continue;
+      if (
+        SINGLE_CHAR_STOPWORDS.has(gram[0]) ||
+        SINGLE_CHAR_STOPWORDS.has(gram[1])
+      ) {
+        continue;
+      }
+      keywords.push(gram);
+    }
+  }
+  // 去重 + 限制数量（防止超长提问产生过多 gram）
+  return Array.from(new Set(keywords)).slice(0, 24);
 }
 
-/** 在 chunks 里做关键词匹配，返回 top N 命中片段 */
-function retrieveChunks(query: string, chunks: string[], topN = 3): string[] {
+/** 一次检索的完整结果（关键词 + 命中片段，用于链路展示） */
+interface KbRetrievalResult {
+  keywords: string[];
+  hits: KbHit[];
+  totalChunks: number;
+}
+
+/** 在 chunks 里做关键词匹配，返回 top N 命中片段（带来源） */
+function retrieveKnowledge(query: string, chunks: KbChunk[], topN = 3): KbRetrievalResult {
   const keywords = extractKeywords(query);
-  if (keywords.length === 0 || chunks.length === 0) return [];
+  if (keywords.length === 0 || chunks.length === 0) {
+    return { keywords, hits: [], totalChunks: chunks.length };
+  }
 
   const scored = chunks
-    .map((chunk) => {
-      const hits = keywords.filter((kw) => chunk.toLowerCase().includes(kw)).length;
-      return { chunk, hits };
+    .map((c) => {
+      const hits = keywords.filter((kw) => c.chunk.toLowerCase().includes(kw)).length;
+      return { docName: c.docName, chunkIndex: c.chunkIndex, snippet: c.chunk, hits };
     })
     .filter((c) => c.hits > 0)
     .sort((a, b) => b.hits - a.hits)
     .slice(0, topN);
 
-  return scored.map((s) => s.chunk);
+  return {
+    keywords,
+    hits: scored.map(({ docName, chunkIndex, snippet }) => ({ docName, chunkIndex, snippet })),
+    totalChunks: chunks.length,
+  };
 }
 
 /** 把命中片段拼到 system prompt 后面 */
-function injectToSystemPrompt(systemPrompt: string, snippets: string[]): string {
-  if (snippets.length === 0) return systemPrompt;
-  const body = snippets.map((s, i) => `[${i + 1}] ${s}`).join("\n\n");
+function injectToSystemPrompt(systemPrompt: string, hits: KbHit[]): string {
+  if (hits.length === 0) return systemPrompt;
+  const body = hits
+    .map((h, i) => `[${i + 1}]（来源：${h.docName} 片段#${h.chunkIndex + 1}）${h.snippet}`)
+    .join("\n\n");
   return `${systemPrompt}\n\n---\n参考资料（请优先使用以下内容回答）：\n${body}`;
 }
 
@@ -411,13 +513,27 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
         .map((m) => ({ role: m.role, content: m.content }));
 
       const apiMessages: { role: string; content: string }[] = [];
-      // 知识库检索：从用户消息提取关键词 → 匹配 chunks → 注入 system prompt
-      const kbChunks = getAllChunks();
-      const kbHits = retrieveChunks(trimmed, kbChunks, 3);
+      // 知识库检索：仅当智能体开启知识库开关时，先检索再注入 system prompt；
+      // 关闭时按普通对话模式响应（不检索、不注入）
+      const kbEnabled = agent?.knowledgeEnabled === true;
+      let kbRetrieval: KbRetrievalResult = { keywords: [], hits: [], totalChunks: 0 };
+      if (kbEnabled) {
+        kbRetrieval = retrieveKnowledge(trimmed, getAllChunks(), 3);
+      }
       const effectiveSystemPrompt = injectToSystemPrompt(
         agent?.systemPrompt ?? "你是一个有帮助的 AI 助手。",
-        kbHits
+        kbRetrieval.hits
       );
+      // 挂到 assistant 消息上，供对话 UI 展示检索链路（含未命中情况）
+      const kbInfo: KbInfo | undefined = kbEnabled
+        ? {
+            enabled: true,
+            keywords: kbRetrieval.keywords,
+            hitCount: kbRetrieval.hits.length,
+            totalChunks: kbRetrieval.totalChunks,
+            hits: kbRetrieval.hits,
+          }
+        : undefined;
       apiMessages.push({ role: "system", content: effectiveSystemPrompt });
       apiMessages.push(...historyMsgs);
       apiMessages.push({ role: "user", content: trimmed });
@@ -498,23 +614,56 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
         role: "assistant",
         content: replyContent,
         createdAt: new Date().toISOString(),
+        kbInfo,
       };
       setMessages((prev) => [...prev, reply]);
 
-      // 持久化 AI 回复
-      const { error: replyErr } = await supabase.from("chat_messages").insert({
+      // 知识库命中信息附加到 llmResult，供上层写入 run_logs（链路可解释）
+      if (kbInfo) {
+        llmResult.kbHitCount = kbInfo.hitCount;
+        const docNames = Array.from(new Set(kbInfo.hits.map((h) => h.docName)));
+        if (docNames.length > 0) llmResult.kbDocNames = docNames.join("、");
+      }
+
+      // 持久化 AI 回复（开启知识库时附带 kb_meta，刷新后检索链路仍可见）
+      const baseRow = {
         id: reply.id,
         session_id: sessionId,
         user_id: userId,
-        role: "assistant",
+        role: "assistant" as const,
         content: replyContent,
         created_at: reply.createdAt,
+      };
+      const { error: replyErr } = await supabase.from("chat_messages").insert({
+        ...baseRow,
+        // kb_meta 为 jsonb 列；未开启知识库时存 null
+        kb_meta: kbInfo
+          ? {
+              keywords: kbInfo.keywords,
+              hitCount: kbInfo.hitCount,
+              totalChunks: kbInfo.totalChunks,
+              hits: kbInfo.hits,
+            }
+          : null,
       });
       if (replyErr) {
-        toast("AI 回复保存失败", {
-          description: replyErr.message,
-          variant: "error",
-        });
+        // 未跑迁移 SQL（kb_meta 列不存在）时降级：不带 kb_meta 重试，保证消息不丢
+        if (kbInfo && /kb_meta|schema cache|column/i.test(replyErr.message)) {
+          const { error: retryErr } = await supabase
+            .from("chat_messages")
+            .insert(baseRow);
+          if (retryErr) {
+            toast("AI 回复保存失败", {
+              description: retryErr.message,
+              variant: "error",
+            });
+          }
+        } else {
+          toast("AI 回复保存失败", {
+            description: replyErr.message,
+            variant: "error",
+          });
+        }
       }
 
       // 5. 回调：让上层写入 run_logs（真实数据）

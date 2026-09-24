@@ -27,6 +27,7 @@ export interface AgentUpdateInput {
   temperature?: number;
   maxTokens?: number;
   status?: AgentStatus;
+  knowledgeEnabled?: boolean;
 }
 
 interface AgentStoreValue {
@@ -52,6 +53,7 @@ function rowToAgent(row: Record<string, unknown>): Agent {
     temperature: Number(row.temperature ?? 0.7),
     maxTokens: Number(row.max_tokens ?? 2048),
     status: (row.status as AgentStatus) || "draft",
+    knowledgeEnabled: Boolean(row.knowledge_enabled),
     createdAt: (row.created_at as string)?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
     lastActive: "刚刚",
     runs: Number(row.runs ?? 0),
@@ -150,6 +152,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       if (input.temperature !== undefined) updateData.temperature = input.temperature;
       if (input.maxTokens !== undefined) updateData.max_tokens = input.maxTokens;
       if (input.status !== undefined) updateData.status = input.status;
+      if (input.knowledgeEnabled !== undefined) updateData.knowledge_enabled = input.knowledgeEnabled;
 
       const { error } = await supabase
         .from("agents")
@@ -171,6 +174,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           if (input.temperature !== undefined) updated.temperature = input.temperature;
           if (input.maxTokens !== undefined) updated.maxTokens = input.maxTokens;
           if (input.status !== undefined) updated.status = input.status;
+          if (input.knowledgeEnabled !== undefined) updated.knowledgeEnabled = input.knowledgeEnabled;
           return updated;
         })
       );

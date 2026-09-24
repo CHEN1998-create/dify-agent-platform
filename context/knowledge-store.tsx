@@ -25,14 +25,22 @@ export interface KnowledgeDoc {
   createdAt: string;
 }
 
+/** 带来源的检索用片段（可解释性：能看到命中了哪个文档的第几个片段） */
+export interface KbChunk {
+  docId: string;
+  docName: string;
+  chunkIndex: number;
+  chunk: string;
+}
+
 interface KnowledgeStoreValue {
   docs: KnowledgeDoc[];
   loading: boolean;
   uploadDoc: (file: File) => Promise<KnowledgeDoc>;
   deleteDoc: (id: string) => Promise<void>;
   getDoc: (id: string) => KnowledgeDoc | undefined;
-  /** 给 chat-store 检索用：返回所有 ready 状态的 chunks */
-  getAllChunks: () => string[];
+  /** 给 chat-store 检索用：返回所有 ready 状态的 chunks（带来源） */
+  getAllChunks: () => KbChunk[];
 }
 
 const Ctx = createContext<KnowledgeStoreValue | undefined>(undefined);
@@ -199,8 +207,17 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
     [docs]
   );
 
-  const getAllChunks = useCallback((): string[] => {
-    return docs.filter((d) => d.status === "ready").flatMap((d) => d.chunks);
+  const getAllChunks = useCallback((): KbChunk[] => {
+    return docs
+      .filter((d) => d.status === "ready")
+      .flatMap((d) =>
+        d.chunks.map((chunk, idx) => ({
+          docId: d.id,
+          docName: d.name,
+          chunkIndex: idx,
+          chunk,
+        }))
+      );
   }, [docs]);
 
   const value = useMemo<KnowledgeStoreValue>(

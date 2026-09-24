@@ -14,6 +14,8 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
 import { useAgentStore } from "@/context/agent-store";
+import { useKnowledgeStore } from "@/context/knowledge-store";
+import { cn } from "@/lib/utils";
 import { activeModels } from "@/lib/models";
 import type { AgentStatus } from "@/lib/mock";
 
@@ -21,6 +23,7 @@ export default function AgentConfigPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { getAgent, updateAgent, deleteAgent } = useAgentStore();
+  const { docs: kbDocs } = useKnowledgeStore();
   const { toast } = useToast();
 
   const agent = getAgent(params.id);
@@ -33,11 +36,12 @@ export default function AgentConfigPage() {
   const [temperature, setTemperature] = useState(agent?.temperature ?? 0.7);
   const [maxTokens, setMaxTokens] = useState(agent?.maxTokens ?? 2048);
   const [status, setStatus] = useState<AgentStatus>(agent?.status ?? "draft");
+  const [knowledgeEnabled, setKnowledgeEnabled] = useState(agent?.knowledgeEnabled ?? false);
   const [debugInput, setDebugInput] = useState("");
 
   const [openDelete, setOpenDelete] = useState(false);
   const initialRef = useRef({
-    name, description, systemPrompt, model, temperature, maxTokens, status,
+    name, description, systemPrompt, model, temperature, maxTokens, status, knowledgeEnabled,
   });
 
   // 切换 agent 时重置表单
@@ -50,6 +54,7 @@ export default function AgentConfigPage() {
     setTemperature(agent.temperature);
     setMaxTokens(agent.maxTokens);
     setStatus(agent.status);
+    setKnowledgeEnabled(agent.knowledgeEnabled ?? false);
     initialRef.current = {
       name: agent.name,
       description: agent.description,
@@ -58,6 +63,7 @@ export default function AgentConfigPage() {
       temperature: agent.temperature,
       maxTokens: agent.maxTokens,
       status: agent.status,
+      knowledgeEnabled: agent.knowledgeEnabled ?? false,
     };
   }, [agent?.id]);
 
@@ -69,9 +75,11 @@ export default function AgentConfigPage() {
       model !== initialRef.current.model ||
       temperature !== initialRef.current.temperature ||
       maxTokens !== initialRef.current.maxTokens ||
-      status !== initialRef.current.status);
+      status !== initialRef.current.status ||
+      knowledgeEnabled !== initialRef.current.knowledgeEnabled);
 
   const statusLabel = { draft: "草稿", published: "已发布", paused: "已停用" }[status];
+  const kbTotalChunks = kbDocs.reduce((sum, d) => sum + d.chunks.length, 0);
 
   const handleSave = async () => {
     if (!agent) return;
@@ -88,8 +96,9 @@ export default function AgentConfigPage() {
         temperature,
         maxTokens,
         status,
+        knowledgeEnabled,
       });
-      initialRef.current = { name, description, systemPrompt, model, temperature, maxTokens, status };
+      initialRef.current = { name, description, systemPrompt, model, temperature, maxTokens, status, knowledgeEnabled };
       toast("配置已保存", { description: agent.name, variant: "success" });
     } catch (err) {
       toast("保存失败", {
@@ -108,6 +117,7 @@ export default function AgentConfigPage() {
     setTemperature(initialRef.current.temperature);
     setMaxTokens(initialRef.current.maxTokens);
     setStatus(initialRef.current.status);
+    setKnowledgeEnabled(initialRef.current.knowledgeEnabled);
     toast("已恢复到上次保存状态", { variant: "info" });
   };
 
@@ -263,6 +273,34 @@ export default function AgentConfigPage() {
                       onChange={(e) => setMaxTokens(Number(e.target.value))}
                     />
                   </div>
+                </div>
+                {/* 知识库开关 */}
+                <div className="flex items-center justify-between gap-4 rounded-lg border px-3 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">知识库增强</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      开启后每次对话先检索知识库片段，与问题一起发给模型；关闭则按普通对话响应。
+                      当前知识库：{kbDocs.length} 个文档 / {kbTotalChunks} 个片段
+                      （<Link href="/knowledge" className="underline hover:text-foreground">去管理</Link>）
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={knowledgeEnabled}
+                    onClick={() => setKnowledgeEnabled((v) => !v)}
+                    className={cn(
+                      "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+                      knowledgeEnabled ? "bg-primary" : "bg-muted-foreground/30"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
+                        knowledgeEnabled ? "translate-x-[22px]" : "translate-x-0.5"
+                      )}
+                    />
+                  </button>
                 </div>
               </CardContent>
             </Card>

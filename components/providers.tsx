@@ -30,6 +30,8 @@ function ChatWithLogsBridge({ children }: { children: React.ReactNode }) {
         promptTokens: result.promptTokens,
         completionTokens: result.completionTokens,
         errorMessage: result.errorMessage,
+        kbHitCount: result.kbHitCount,
+        kbDocNames: result.kbDocNames,
       });
     },
     [createLog]

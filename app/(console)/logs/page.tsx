@@ -166,6 +166,7 @@ export default function LogsPage() {
                   <th className="px-4 py-3 font-medium">状态</th>
                   <th className="px-4 py-3 font-medium">智能体</th>
                   <th className="px-4 py-3 font-medium">模型</th>
+                  <th className="px-4 py-3 font-medium">知识库</th>
                   <th className="px-4 py-3 font-medium">耗时</th>
                   <th className="px-4 py-3 font-medium">Tokens</th>
                   <th className="px-4 py-3 font-medium">时间</th>
@@ -175,7 +176,7 @@ export default function LogsPage() {
               <tbody className="divide-y">
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                    <td colSpan={8} className="px-4 py-12 text-center text-sm text-muted-foreground">
                       暂无日志。去 <Link href="/chat" className="text-primary underline">对话页</Link> 发一条消息，日志会自动出现在这里。
                     </td>
                   </tr>
@@ -193,6 +194,18 @@ export default function LogsPage() {
                       </td>
                       <td className="px-4 py-3 font-medium">{log.agentName}</td>
                       <td className="px-4 py-3 text-muted-foreground">{log.model}</td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {log.kbHitCount != null ? (
+                          <span
+                            className="text-xs text-emerald-600"
+                            title={log.kbDocNames ?? undefined}
+                          >
+                            📚 命中 {log.kbHitCount} 片段
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td className="px-4 py-3 tabular-nums">{log.latencyMs} ms</td>
                       <td className="px-4 py-3 tabular-nums text-muted-foreground">
                         {log.promptTokens} / {log.completionTokens}
@@ -264,6 +277,14 @@ export default function LogsPage() {
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">模型</span>
                 <span>{detailLog.model}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">知识库</span>
+                <span>
+                  {detailLog.kbHitCount != null
+                    ? `命中 ${detailLog.kbHitCount} 个片段${detailLog.kbDocNames ? `（${detailLog.kbDocNames}）` : ""}`
+                    : "未启用"}
+                </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">耗时</span>
