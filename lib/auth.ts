@@ -41,13 +41,18 @@ export async function registerUser(
   });
 
   if (error) {
-    // Supabase 返回的错误信息中文化
     const msg = error.message.toLowerCase();
     if (msg.includes("already registered") || msg.includes("already been registered")) {
       throw new Error("该邮箱已被注册");
     }
     if (msg.includes("password")) {
       throw new Error("密码不符合要求（至少 6 位）");
+    }
+    if (msg.includes("rate limit")) {
+      throw new Error("请求过于频繁，请稍后再试");
+    }
+    if (msg.includes("invalid")) {
+      throw new Error("邮箱格式不正确");
     }
     throw new Error(error.message);
   }
