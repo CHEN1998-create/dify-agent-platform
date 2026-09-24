@@ -5,6 +5,7 @@ import { AuthProvider } from "@/context/auth-context";
 import { AgentProvider } from "@/context/agent-store";
 import { ChatProvider, type OnRunResult } from "@/context/chat-store";
 import { RunLogsProvider, useRunLogs } from "@/context/run-logs";
+import { KnowledgeProvider } from "@/context/knowledge-store";
 import { ToastProvider } from "@/components/ui/toast";
 
 /**
@@ -43,9 +44,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <ToastProvider>
       <AuthProvider>
         <AgentProvider>
-          <RunLogsProvider>
-            <ChatWithLogsBridge>{children}</ChatWithLogsBridge>
-          </RunLogsProvider>
+          <KnowledgeProvider>
+            <RunLogsProvider>
+              <ChatWithLogsBridge>{children}</ChatWithLogsBridge>
+            </RunLogsProvider>
+          </KnowledgeProvider>
         </AgentProvider>
       </AuthProvider>
     </ToastProvider>

@@ -13,6 +13,7 @@ import { useAgentStore } from "@/context/agent-store";
 import { useToast } from "@/components/ui/toast";
 import { DEFAULT_MODEL } from "@/lib/models";
 import { useAuth } from "@/context/auth-context";
+import { useKnowledgeStore } from "@/context/knowledge-store";
 
 export interface ChatSession {
   id: string;
@@ -103,6 +104,56 @@ function timeAgo(iso: string) {
   return Math.floor(h / 24) + " 天前";
 }
 
+// ============ 知识库关键词检索（MVP，不用 embedding） ============
+
+/** 中英文常见停用词 —— 简单过滤不参与匹配 */
+const STOPWORDS = new Set([
+  "的", "了", "是", "在", "和", "与", "或", "不", "也", "都", "就", "要", "会",
+  "我", "你", "他", "她", "它", "我们", "你们", "他们",
+  "什么", "怎么", "为什么", "如何", "哪", "哪些", "请", "帮我", "一下",
+  "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+  "do", "does", "did", "have", "has", "had", "will", "would", "can", "could",
+  "should", "may", "might", "must", "shall",
+  "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+  "what", "how", "why", "where", "when", "who", "please", "help",
+]);
+
+/** 从用户消息提取关键词（去停用词 + 2~20 字符） */
+function extractKeywords(text: string): string[] {
+  // 按中英文标点 + 空白切
+  const tokens = text
+    .toLowerCase()
+    .split(/[\s.,;:!?。，；：！？、…\-—_'"""''（）()【】\[\]《》<>/\\|=+*#@$%^&~`0-9]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && t.length <= 20 && !STOPWORDS.has(t));
+  return Array.from(new Set(tokens)); // 去重
+}
+
+/** 在 chunks 里做关键词匹配，返回 top N 命中片段 */
+function retrieveChunks(query: string, chunks: string[], topN = 3): string[] {
+  const keywords = extractKeywords(query);
+  if (keywords.length === 0 || chunks.length === 0) return [];
+
+  // 每个 chunk 统计命中的关键词数量
+  const scored = chunks
+    .map((chunk) => {
+      const hits = keywords.filter((kw) => chunk.toLowerCase().includes(kw)).length;
+      return { chunk, hits };
+    })
+    .filter((c) => c.hits > 0)
+    .sort((a, b) => b.hits - a.hits)
+    .slice(0, topN);
+
+  return scored.map((s) => s.chunk);
+}
+
+/** 把命中片段拼到 system prompt 后面 */
+function injectToSystemPrompt(systemPrompt: string, snippets: string[]): string {
+  if (snippets.length === 0) return systemPrompt;
+  const body = snippets.map((s, i) => `[${i + 1}] ${s}`).join("\n\n");
+  return `${systemPrompt}\n\n---\n参考资料（请优先使用以下内容回答）：\n${body}`;
+}
+
 interface ChatProviderProps {
   children: ReactNode;
   /** 每次 LLM 调用完成后回调（用于写入 run_logs） */
@@ -120,6 +171,7 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
   const { getAgent } = useAgentStore();
   const { toast } = useToast();
   const { user } = useAuth();
+  const { getAllChunks } = useKnowledgeStore();
   const userId = user?.id ?? null;
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -247,9 +299,14 @@ export function ChatProvider({ children, onRun }: ChatProviderProps) {
         .map((m) => ({ role: m.role, content: m.content }));
 
       const apiMessages: { role: string; content: string }[] = [];
-      if (agent?.systemPrompt) {
-        apiMessages.push({ role: "system", content: agent.systemPrompt });
-      }
+      // 知识库检索：从用户消息提取关键词 → 匹配 chunks → 注入 system prompt
+      const kbChunks = getAllChunks();
+      const kbHits = retrieveChunks(trimmed, kbChunks, 3);
+      const effectiveSystemPrompt = injectToSystemPrompt(
+        agent?.systemPrompt ?? "你是一个有帮助的 AI 助手。",
+        kbHits
+      );
+      apiMessages.push({ role: "system", content: effectiveSystemPrompt });
       apiMessages.push(...historyMsgs);
       apiMessages.push({ role: "user", content: trimmed });
 
